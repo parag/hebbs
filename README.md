@@ -180,41 +180,40 @@ Benchmarked on a single `c6g.large` instance (2 vCPU, 4GB RAM) with 10M stored m
 ## Architecture
 
 ```text
-┌──────────────────────────────────────────────────────┐
-│                    Client SDKs                       │
-│            Python  │  TypeScript  │  Rust            │
-├──────────────────────────────────────────────────────┤
-│               gRPC  │  HTTP/REST                     │
-├──────────────────────────────────────────────────────┤
-│                                                      │
-│                 Core Engine (Rust)                    │
-│                                                      │
-│  ┌────────────┐ ┌────────────┐ ┌──────────────────┐ │
-│  │  Remember   │ │   Recall   │ │ Reflect Pipeline │ │
-│  │  Engine     │ │   Engine   │ │ (background)     │ │
-│  │            │ │            │ │                  │ │
-│  │ • encode   │ │ • prime    │ │ • cluster (Rust) │ │
-│  │ • score    │ │ • query    │ │ • propose (LLM)  │ │
-│  │ • index    │ │ • subscribe│ │ • validate (LLM) │ │
-│  │ • decay    │ │ • merge    │ │ • store insights │ │
-│  └─────┬──────┘ └─────┬──────┘ └────────┬─────────┘ │
-│        │              │                 │            │
-│  ┌─────┴──────────────┴─────────────────┴─────────┐ │
-│  │              Index Layer                        │ │
-│  │   Temporal (B-tree) │ Vector (HNSW) │ Graph    │ │
-│  └──────────────────────┬──────────────────────────┘ │
-│                         │                            │
-│  ┌──────────────────────┴──────────────────────────┐ │
-│  │         Storage Engine (RocksDB)                 │ │
-│  │         Column Families per index type           │ │
-│  └─────────────────────────────────────────────────┘ │
-│                                                      │
-│  ┌─────────────────────┐  ┌────────────────────────┐ │
-│  │ Embedding Engine    │  │ LLM Provider Interface │ │
-│  │ (ONNX Runtime,      │  │ (Anthropic, OpenAI,    │ │
-│  │  built-in default)  │  │  Ollama -- pluggable)  │ │
-│  └─────────────────────┘  └────────────────────────┘ │
-└──────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────
+                     Client SDKs
+             Python  │  TypeScript  │  Rust
+──────────────────────────────────────────────────────────
+                gRPC  │  HTTP/REST
+──────────────────────────────────────────────────────────
+
+                  Core Engine (Rust)
+
+  ┌────────────┐ ┌────────────┐ ┌──────────────────┐
+  │  Remember   │ │   Recall   │ │ Reflect Pipeline │
+  │  Engine     │ │   Engine   │ │ (background)     │
+  │             │ │            │ │                  │
+  │ • encode    │ │ • prime    │ │ • cluster (Rust) │
+  │ • score     │ │ • query    │ │ • propose (LLM)  │
+  │ • index     │ │ • subscribe│ │ • validate (LLM) │
+  │ • decay     │ │ • merge    │ │ • store insights │
+  └─────┬───────┘ └─────┬──────┘ └────────┬─────────┘
+        │               │                 │
+  ┌─────┴───────────────┴─────────────────┴──────────┐
+  │              Index Layer                         │
+  │   Temporal (B-tree) │ Vector (HNSW) │ Graph      │
+  └──────────────────────┬───────────────────────────┘
+                         │
+  ┌──────────────────────┴───────────────────────────┐
+  │         Storage Engine (RocksDB)                 │
+  │         Column Families per index type           │
+  └──────────────────────────────────────────────────┘
+
+  ┌───────────────────────┐  ┌────────────────────────┐
+  │ Embedding Engine      │  │ LLM Provider Interface │
+  │ (ONNX Runtime,        │  │ (Anthropic, OpenAI,    │
+  │  built-in default)    │  │  Ollama -- pluggable)  │
+  └───────────────────────┘  └────────────────────────┘
 ```
 
 **Built with:**
