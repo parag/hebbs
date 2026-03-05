@@ -1,0 +1,820 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
+    routing::{delete, get, post, put},
+    Json, Router,
+};
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use hebbs_core::engine::{Engine, RememberInput};
+use hebbs_core::forget::ForgetCriteria;
+use hebbs_core::memory::MemoryKind;
+use hebbs_core::recall::{PrimeInput, RecallInput, RecallStrategy};
+use hebbs_core::reflect::InsightsFilter;
+use hebbs_core::revise::{ContextMode, ReviseInput};
+use hebbs_core::subscribe::SubscribeConfig;
+use hebbs_core::tenant::TenantContext;
+
+use crate::convert;
+use crate::metrics::HebbsMetrics;
+
+pub(crate) struct SseSubscriptionEntry {
+    handle: hebbs_core::subscribe::SubscriptionHandle,
+}
+
+type SubscriptionMap = Arc<Mutex<HashMap<u64, SseSubscriptionEntry>>>;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub engine: Arc<Engine>,
+    pub metrics: Arc<HebbsMetrics>,
+    pub start_time: std::time::Instant,
+    pub version: String,
+    pub(crate) sse_subscriptions: SubscriptionMap,
+}
+
+impl AppState {
+    pub fn new(
+        engine: Arc<Engine>,
+        metrics: Arc<HebbsMetrics>,
+        start_time: std::time::Instant,
+        version: String,
+    ) -> Self {
+        Self {
+            engine,
+            metrics,
+            start_time,
+            version,
+            sse_subscriptions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+pub fn create_router(state: AppState) -> Router {
+    Router::new()
+        .route("/v1/memories", post(remember_handler))
+        .route("/v1/memories/:id", get(get_handler))
+        .route("/v1/recall", post(recall_handler))
+        .route("/v1/prime", post(prime_handler))
+        .route("/v1/revise/:id", put(revise_handler))
+        .route("/v1/forget", post(forget_handler))
+        .route("/v1/subscribe", post(sse_subscribe_handler))
+        .route("/v1/subscribe/:id/feed", post(sse_feed_handler))
+        .route("/v1/subscribe/:id", delete(sse_close_handler))
+        .route("/v1/insights", get(insights_handler))
+        .route("/v1/health/live", get(liveness_handler))
+        .route("/v1/health/ready", get(readiness_handler))
+        .route("/v1/metrics", get(metrics_handler))
+        .with_state(state)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSON Request/Response Types
+// ═══════════════════════════════════════════════════════════════════════
+
+#[derive(Deserialize)]
+struct RememberBody {
+    content: String,
+    importance: Option<f32>,
+    context: Option<serde_json::Map<String, serde_json::Value>>,
+    entity_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RecallBody {
+    cue: String,
+    strategies: Vec<String>,
+    top_k: Option<usize>,
+    entity_id: Option<String>,
+    time_range: Option<TimeRangeBody>,
+    max_depth: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct TimeRangeBody {
+    start_us: u64,
+    end_us: u64,
+}
+
+#[derive(Deserialize)]
+struct PrimeBody {
+    entity_id: String,
+    context: Option<serde_json::Map<String, serde_json::Value>>,
+    max_memories: Option<usize>,
+    recency_window_us: Option<u64>,
+    similarity_cue: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReviseBody {
+    content: Option<String>,
+    importance: Option<f32>,
+    context: Option<serde_json::Map<String, serde_json::Value>>,
+    context_mode: Option<String>,
+    entity_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ForgetBody {
+    memory_ids: Option<Vec<String>>,
+    entity_id: Option<String>,
+    staleness_threshold_us: Option<u64>,
+    access_count_floor: Option<u64>,
+    memory_kind: Option<String>,
+    decay_score_floor: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct InsightsQuery {
+    entity_id: Option<String>,
+    min_confidence: Option<f32>,
+    max_results: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct MemoryJson {
+    memory_id: String,
+    content: String,
+    importance: f32,
+    context: serde_json::Value,
+    entity_id: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+    last_accessed_at: u64,
+    access_count: u64,
+    decay_score: f32,
+    kind: String,
+    logical_clock: u64,
+}
+
+#[derive(Serialize)]
+struct ErrorJson {
+    error_code: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct ForgetResponseJson {
+    forgotten_count: usize,
+    cascade_count: usize,
+    truncated: bool,
+    tombstone_count: usize,
+}
+
+#[derive(Serialize)]
+struct RecallResultJson {
+    memory: MemoryJson,
+    score: f32,
+}
+
+#[derive(Serialize)]
+#[allow(dead_code)]
+struct HealthJson {
+    status: String,
+    version: String,
+    memory_count: usize,
+    uptime_seconds: u64,
+}
+
+fn memory_to_json(m: &hebbs_core::memory::Memory) -> MemoryJson {
+    let ctx: serde_json::Value = if m.context_bytes.is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_slice(&m.context_bytes)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+    };
+
+    MemoryJson {
+        memory_id: hex::encode(&m.memory_id),
+        content: m.content.clone(),
+        importance: m.importance,
+        context: ctx,
+        entity_id: m.entity_id.clone(),
+        created_at: m.created_at,
+        updated_at: m.updated_at,
+        last_accessed_at: m.last_accessed_at,
+        access_count: m.access_count,
+        decay_score: m.decay_score,
+        kind: match m.kind {
+            MemoryKind::Episode => "episode".to_string(),
+            MemoryKind::Insight => "insight".to_string(),
+            MemoryKind::Revision => "revision".to_string(),
+        },
+        logical_clock: m.logical_clock,
+    }
+}
+
+fn json_error(status: StatusCode, code: &str, msg: &str) -> (StatusCode, Json<ErrorJson>) {
+    (
+        status,
+        Json(ErrorJson {
+            error_code: code.to_string(),
+            message: msg.to_string(),
+        }),
+    )
+}
+
+fn map_hebbs_error(e: hebbs_core::error::HebbsError) -> (StatusCode, Json<ErrorJson>) {
+    let (status, msg) = convert::hebbs_error_to_http_status(&e);
+    let code = match &e {
+        hebbs_core::error::HebbsError::MemoryNotFound { .. } => "not_found",
+        hebbs_core::error::HebbsError::InvalidInput { .. } => "invalid_input",
+        hebbs_core::error::HebbsError::Storage(_) => "storage_error",
+        hebbs_core::error::HebbsError::Reflect(_) => "reflect_error",
+        _ => "internal_error",
+    };
+    json_error(status, code, &msg)
+}
+
+fn parse_strategy(s: &str) -> Option<RecallStrategy> {
+    match s.to_lowercase().as_str() {
+        "similarity" => Some(RecallStrategy::Similarity),
+        "temporal" => Some(RecallStrategy::Temporal),
+        "causal" => Some(RecallStrategy::Causal),
+        "analogical" => Some(RecallStrategy::Analogical),
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Handlers
+// ═══════════════════════════════════════════════════════════════════════
+
+async fn remember_handler(
+    State(state): State<AppState>,
+    Json(body): Json<RememberBody>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
+    let context = body
+        .context
+        .map(|m| m.into_iter().collect::<std::collections::HashMap<_, _>>());
+
+    let input = RememberInput {
+        content: body.content,
+        importance: body.importance,
+        context,
+        entity_id: body.entity_id,
+        edges: Vec::new(),
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.remember(input)).await;
+
+    match result {
+        Ok(Ok(memory)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("remember", "ok", elapsed);
+            state.metrics.memory_count.inc();
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(memory_to_json(&memory)).unwrap()),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state
+                .metrics
+                .observe_operation("remember", "error", elapsed);
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_handler(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let memory_id = match hex::decode(&id) {
+        Ok(v) if v.len() == 16 => v,
+        _ => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+                "memory_id must be a 32-character hex string (16 bytes)",
+            )
+            .into_response();
+        }
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.get(&memory_id)).await;
+
+    match result {
+        Ok(Ok(memory)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(memory_to_json(&memory)).unwrap()),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn recall_handler(
+    State(state): State<AppState>,
+    Json(body): Json<RecallBody>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
+    let strategies: Vec<RecallStrategy> = match body
+        .strategies
+        .iter()
+        .map(|s| parse_strategy(s).ok_or_else(|| format!("unknown strategy: {}", s)))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return json_error(StatusCode::BAD_REQUEST, "invalid_input", &e).into_response();
+        }
+    };
+
+    let input = RecallInput {
+        cue: body.cue,
+        strategies,
+        top_k: body.top_k,
+        entity_id: body.entity_id,
+        time_range: body.time_range.map(|tr| (tr.start_us, tr.end_us)),
+        edge_types: None,
+        max_depth: body.max_depth,
+        ef_search: None,
+        scoring_weights: None,
+        cue_context: None,
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.recall(input)).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("recall", "ok", elapsed);
+
+            let results: Vec<RecallResultJson> = output
+                .results
+                .iter()
+                .map(|r| RecallResultJson {
+                    memory: memory_to_json(&r.memory),
+                    score: r.score,
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&results).unwrap()),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("recall", "error", elapsed);
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn prime_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PrimeBody>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
+    let context = body
+        .context
+        .map(|m| m.into_iter().collect::<std::collections::HashMap<_, _>>());
+
+    let input = PrimeInput {
+        entity_id: body.entity_id,
+        context,
+        max_memories: body.max_memories,
+        recency_window_us: body.recency_window_us,
+        similarity_cue: body.similarity_cue,
+        scoring_weights: None,
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.prime(input)).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("prime", "ok", elapsed);
+
+            let results: Vec<RecallResultJson> = output
+                .results
+                .iter()
+                .map(|r| RecallResultJson {
+                    memory: memory_to_json(&r.memory),
+                    score: r.score,
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&results).unwrap()),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn revise_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReviseBody>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
+    let memory_id = match hex::decode(&id) {
+        Ok(v) if v.len() == 16 => v,
+        _ => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+                "memory_id must be a 32-character hex string (16 bytes)",
+            )
+            .into_response();
+        }
+    };
+
+    let context = body
+        .context
+        .map(|m| m.into_iter().collect::<std::collections::HashMap<_, _>>());
+
+    let context_mode = match body.context_mode.as_deref() {
+        Some("replace") => ContextMode::Replace,
+        _ => ContextMode::Merge,
+    };
+
+    let input = ReviseInput {
+        memory_id,
+        content: body.content,
+        importance: body.importance,
+        context,
+        context_mode,
+        entity_id: body.entity_id.map(Some),
+        edges: Vec::new(),
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.revise(input)).await;
+
+    match result {
+        Ok(Ok(memory)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("revise", "ok", elapsed);
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(memory_to_json(&memory)).unwrap()),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("revise", "error", elapsed);
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn forget_handler(
+    State(state): State<AppState>,
+    Json(body): Json<ForgetBody>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
+    let memory_ids: Vec<Vec<u8>> = body
+        .memory_ids
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| hex::decode(&s).ok())
+        .collect();
+
+    let memory_kind = body.memory_kind.and_then(|k| match k.as_str() {
+        "episode" => Some(MemoryKind::Episode),
+        "insight" => Some(MemoryKind::Insight),
+        "revision" => Some(MemoryKind::Revision),
+        _ => None,
+    });
+
+    let criteria = ForgetCriteria {
+        memory_ids,
+        entity_id: body.entity_id,
+        staleness_threshold_us: body.staleness_threshold_us,
+        access_count_floor: body.access_count_floor,
+        memory_kind,
+        decay_score_floor: body.decay_score_floor,
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.forget(criteria)).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            state.metrics.observe_operation("forget", "ok", elapsed);
+            (
+                StatusCode::OK,
+                Json(ForgetResponseJson {
+                    forgotten_count: output.forgotten_count,
+                    cascade_count: output.cascade_count,
+                    truncated: output.truncated,
+                    tombstone_count: output.tombstone_count,
+                }),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn insights_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<InsightsQuery>,
+) -> impl IntoResponse {
+    let filter = InsightsFilter {
+        entity_id: query.entity_id,
+        min_confidence: query.min_confidence,
+        max_results: query.max_results,
+    };
+
+    let engine = state.engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine.insights(filter)).await;
+
+    match result {
+        Ok(Ok(insights)) => {
+            let json: Vec<MemoryJson> = insights.iter().map(memory_to_json).collect();
+            (StatusCode::OK, Json(serde_json::to_value(&json).unwrap())).into_response()
+        }
+        Ok(Err(e)) => {
+            let (status, json) = map_hebbs_error(e);
+            (status, json).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorJson {
+                error_code: "internal_error".to_string(),
+                message: format!("task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SSE Subscribe Types & Handlers
+// ═══════════════════════════════════════════════════════════════════════
+
+#[derive(Deserialize)]
+struct SubscribeBody {
+    entity_id: Option<String>,
+    kind_filter: Option<Vec<String>>,
+    confidence_threshold: Option<f32>,
+    time_scope_us: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct SseFeedBody {
+    text: String,
+}
+
+fn parse_memory_kind(s: &str) -> Option<MemoryKind> {
+    match s.to_lowercase().as_str() {
+        "episode" => Some(MemoryKind::Episode),
+        "insight" => Some(MemoryKind::Insight),
+        "revision" => Some(MemoryKind::Revision),
+        _ => None,
+    }
+}
+
+async fn sse_subscribe_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SubscribeBody>,
+) -> impl IntoResponse {
+    let kinds: Vec<MemoryKind> = body
+        .kind_filter
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| parse_memory_kind(s))
+        .collect();
+
+    let config = SubscribeConfig {
+        entity_id: body.entity_id,
+        memory_kinds: kinds,
+        confidence_threshold: body.confidence_threshold.unwrap_or(0.5),
+        time_scope_us: body.time_scope_us,
+        ..SubscribeConfig::default()
+    };
+
+    let tenant = TenantContext::default();
+    let engine = state.engine.clone();
+    let handle = match tokio::task::spawn_blocking(move || {
+        engine.subscribe_for_tenant(&tenant, config)
+    })
+    .await
+    {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => {
+            let (status, json) = map_hebbs_error(e);
+            return (status, json).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorJson {
+                    error_code: "internal_error".to_string(),
+                    message: format!("task join error: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let subscription_id = handle.id();
+    state.sse_subscriptions.lock().insert(
+        subscription_id,
+        SseSubscriptionEntry { handle },
+    );
+
+    state.metrics.active_subscriptions.inc();
+
+    let subscriptions = state.sse_subscriptions.clone();
+    let metrics = state.metrics.clone();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(128);
+
+    tokio::spawn(async move {
+        let mut sequence: u64 = 0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+            let push_opt = {
+                let subs = subscriptions.lock();
+                match subs.get(&subscription_id) {
+                    Some(entry) => entry.handle.try_recv(),
+                    None => break,
+                }
+            };
+
+            if let Some(push) = push_opt {
+                sequence += 1;
+                let msg = serde_json::json!({
+                    "subscription_id": subscription_id,
+                    "memory": memory_to_json(&push.memory),
+                    "confidence": push.confidence,
+                    "push_timestamp_us": push.push_timestamp_us,
+                    "sequence_number": sequence,
+                });
+                let event = Event::default().data(msg.to_string());
+                if tx.send(Ok(event)).await.is_err() {
+                    break;
+                }
+            }
+
+            if tx.is_closed() {
+                break;
+            }
+        }
+
+        let mut subs = subscriptions.lock();
+        if let Some(mut entry) = subs.remove(&subscription_id) {
+            entry.handle.close();
+        }
+        metrics.active_subscriptions.dec();
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn sse_feed_handler(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    Json(body): Json<SseFeedBody>,
+) -> impl IntoResponse {
+    let subs = state.sse_subscriptions.lock();
+    let entry = match subs.get(&id) {
+        Some(e) => e,
+        None => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                &format!("subscription {} not found", id),
+            )
+            .into_response();
+        }
+    };
+
+    let _ = entry.handle.feed(&body.text);
+    (StatusCode::OK, Json(serde_json::json!({}))).into_response()
+}
+
+async fn sse_close_handler(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    let mut subs = state.sse_subscriptions.lock();
+    if let Some(mut entry) = subs.remove(&id) {
+        entry.handle.close();
+        state.metrics.active_subscriptions.dec();
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({}))).into_response()
+}
+
+async fn liveness_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({"status": "alive"})))
+}
+
+async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let engine = state.engine.clone();
+    let count_result = tokio::task::spawn_blocking(move || engine.count()).await;
+
+    match count_result {
+        Ok(Ok(_)) => (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response(),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "not_ready"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let body = state.metrics.render();
+    (
+        StatusCode::OK,
+        [(
+            http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+}

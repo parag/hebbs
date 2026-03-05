@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "py-v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench-full:
+    name: Full Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p hebbs-bench --release
+      - name: Run full benchmarks
+        run: ./target/release/hebbs-bench all --tier standard --output release-bench.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-benchmarks
+          path: release-bench.json
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: hebbs-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: hebbs-linux-aarch64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: hebbs-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p hebbs-server -p hebbs-cli -p hebbs-bench
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/hebbs-server dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/hebbs-cli dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/hebbs-bench dist/ 2>/dev/null || true
+          tar czf ${{ matrix.artifact }}.tar.gz -C dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  build-python-wheels:
+    name: Python wheel (${{ matrix.os }}-${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: "2_28"
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: "2_28"
+          - os: macos-latest
+            target: aarch64
+          - os: macos-13
+            target: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/hebbs-python
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: crates/hebbs-python/dist/
+
+  python-sdist:
+    name: Python sdist
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/hebbs-python
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: crates/hebbs-python/dist/
+
+  create-release:
+    name: Create Release
+    needs: [build-binaries, bench-full]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-python-wheels, python-sdist]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: python-*
+          merge-multiple: true
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}

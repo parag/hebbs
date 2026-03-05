@@ -1,0 +1,64 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full-test:
+    name: Full Test Suite (including ignored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run all tests (including ignored)
+        run: cargo test --workspace -- --include-ignored
+
+  bench-standard:
+    name: Standard Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p hebbs-bench --release
+      - name: Run standard benchmarks
+        run: ./target/release/hebbs-bench all --tier standard --output nightly-bench.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-bench-${{ github.run_number }}
+          path: nightly-bench.json
+          retention-days: 90
+
+  bench-python:
+    name: Python SDK Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build Python SDK
+        working-directory: crates/hebbs-python
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin pytest
+          maturin develop --release
+      - name: Run Python benchmarks
+        working-directory: crates/hebbs-python
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v --tb=short

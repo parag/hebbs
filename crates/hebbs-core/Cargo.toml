@@ -1,0 +1,32 @@
+[package]
+name = "hebbs-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "BSL-1.1"
+description = "Core cognitive memory engine for HEBBS"
+
+[dependencies]
+hebbs-storage = { path = "../hebbs-storage" }
+hebbs-embed = { path = "../hebbs-embed" }
+hebbs-index = { path = "../hebbs-index" }
+hebbs-reflect = { path = "../hebbs-reflect" }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bitcode.workspace = true
+ulid.workspace = true
+parking_lot.workspace = true
+hex.workspace = true
+crossbeam-channel.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+rand.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "core_benchmarks"
+harness = false

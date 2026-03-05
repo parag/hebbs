@@ -1,0 +1,28 @@
+[package]
+name = "hebbs-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "C-ABI FFI layer for HEBBS cognitive memory engine (embedded mode)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hebbs-core = { path = "../hebbs-core" }
+hebbs-storage = { path = "../hebbs-storage" }
+hebbs-embed = { path = "../hebbs-embed" }
+hebbs-index = { path = "../hebbs-index" }
+hebbs-reflect = { path = "../hebbs-reflect" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ulid = { workspace = true }
+libc = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]

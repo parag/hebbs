@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hebbs-storage",
+    "crates/hebbs-embed",
+    "crates/hebbs-index",
+    "crates/hebbs-reflect",
+    "crates/hebbs-core",
+    "crates/hebbs-proto",
+    "crates/hebbs-server",
+    "crates/hebbs-cli",
+    "crates/hebbs-client",
+    "crates/hebbs-ffi",
+    "crates/hebbs-python",
+    "crates/hebbs-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+# License is set per-crate: BSL-1.1 for engine, Apache-2.0 for client SDKs.
+# See LICENSE-BSL and LICENSE-APACHE at the repo root.
+repository = "https://github.com/hebbs/hebbs"
+
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bitcode = "0.6"
+ulid = { version = "1", features = ["serde"] }
+rocksdb = "0.22"
+parking_lot = "0.12"
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+rand = "0.8"
+hex = "0.4"
+ort = { version = "2.0.0-rc.11", features = ["ndarray"] }
+tokenizers = "0.22"
+ndarray = "0.17"
+sha2 = "0.10"
+ureq = { version = "3", features = ["json"] }
+crossbeam-channel = "0.5"
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tonic-build = "0.12"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+hyper = "1"
+hyper-util = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+prometheus = "0.13"
+rustyline = "15"
+comfy-table = "7"
+owo-colors = "4"
+dirs = "6"
+tokio-stream = "0.1"
+libc = "0.2"
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+
+[profile.bench]
+inherits = "release"
+debug = true

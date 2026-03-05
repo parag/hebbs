@@ -1,0 +1,16 @@
+[package]
+name = "hebbs-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "Protobuf definitions and tonic-generated types for HEBBS"
+
+[dependencies]
+prost = "0.13"
+prost-types = "0.13"
+tonic = "0.12"
+
+[build-dependencies]
+tonic-build = "0.12"

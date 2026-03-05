@@ -1,0 +1,368 @@
+syntax = "proto3";
+
+package hebbs.v1;
+
+import "google/protobuf/struct.proto";
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Services
+// ═══════════════════════════════════════════════════════════════════════
+
+service MemoryService {
+  rpc Remember(RememberRequest) returns (RememberResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Recall(RecallRequest) returns (RecallResponse);
+  rpc Prime(PrimeRequest) returns (PrimeResponse);
+  rpc Revise(ReviseRequest) returns (ReviseResponse);
+  rpc Forget(ForgetRequest) returns (ForgetResponse);
+  rpc SetPolicy(SetPolicyRequest) returns (SetPolicyResponse);
+}
+
+service SubscribeService {
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribePushMessage);
+  rpc Feed(FeedRequest) returns (FeedResponse);
+  rpc CloseSubscription(CloseSubscriptionRequest) returns (CloseSubscriptionResponse);
+}
+
+service ReflectService {
+  rpc Reflect(ReflectRequest) returns (ReflectResponse);
+  rpc GetInsights(GetInsightsRequest) returns (GetInsightsResponse);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Shared Types
+// ═══════════════════════════════════════════════════════════════════════
+
+enum MemoryKind {
+  MEMORY_KIND_UNSPECIFIED = 0;
+  MEMORY_KIND_EPISODE = 1;
+  MEMORY_KIND_INSIGHT = 2;
+  MEMORY_KIND_REVISION = 3;
+}
+
+enum EdgeType {
+  EDGE_TYPE_UNSPECIFIED = 0;
+  EDGE_TYPE_CAUSED_BY = 1;
+  EDGE_TYPE_RELATED_TO = 2;
+  EDGE_TYPE_FOLLOWED_BY = 3;
+  EDGE_TYPE_REVISED_FROM = 4;
+  EDGE_TYPE_INSIGHT_FROM = 5;
+}
+
+enum RecallStrategyType {
+  UNSPECIFIED_STRATEGY = 0;
+  SIMILARITY = 1;
+  TEMPORAL = 2;
+  CAUSAL = 3;
+  ANALOGICAL = 4;
+}
+
+enum ContextMode {
+  CONTEXT_MODE_UNSPECIFIED = 0;
+  CONTEXT_MODE_MERGE = 1;
+  CONTEXT_MODE_REPLACE = 2;
+}
+
+message Memory {
+  bytes memory_id = 1;
+  string content = 2;
+  float importance = 3;
+  google.protobuf.Struct context = 4;
+  optional string entity_id = 5;
+  repeated float embedding = 6;
+  uint64 created_at = 7;
+  uint64 updated_at = 8;
+  uint64 last_accessed_at = 9;
+  uint64 access_count = 10;
+  float decay_score = 11;
+  MemoryKind kind = 12;
+  optional string device_id = 13;
+  uint64 logical_clock = 14;
+}
+
+message Edge {
+  bytes target_id = 1;
+  EdgeType edge_type = 2;
+  optional float confidence = 3;
+}
+
+message TimeRange {
+  uint64 start_us = 1;
+  uint64 end_us = 2;
+}
+
+message ScoringWeights {
+  float w_relevance = 1;
+  float w_recency = 2;
+  float w_importance = 3;
+  float w_reinforcement = 4;
+  uint64 max_age_us = 5;
+  uint64 reinforcement_cap = 6;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MemoryService Messages
+// ═══════════════════════════════════════════════════════════════════════
+
+// --- Remember ---
+
+message RememberRequest {
+  string content = 1;
+  optional float importance = 2;
+  google.protobuf.Struct context = 3;
+  optional string entity_id = 4;
+  repeated Edge edges = 5;
+  optional string tenant_id = 6;
+}
+
+message RememberResponse {
+  Memory memory = 1;
+}
+
+// --- Get ---
+
+message GetRequest {
+  bytes memory_id = 1;
+  optional string tenant_id = 2;
+}
+
+message GetResponse {
+  Memory memory = 1;
+}
+
+// --- Recall ---
+
+message RecallStrategyConfig {
+  RecallStrategyType strategy_type = 1;
+
+  // Similarity / Analogical
+  optional uint32 top_k = 2;
+  optional uint32 ef_search = 3;
+
+  // Temporal
+  optional string entity_id = 4;
+  optional TimeRange time_range = 5;
+
+  // Causal
+  optional bytes seed_memory_id = 6;
+  repeated EdgeType edge_types = 7;
+  optional uint32 max_depth = 8;
+
+  // Analogical structural weights
+  optional float analogical_alpha = 9;
+}
+
+message RecallRequest {
+  string cue = 1;
+  repeated RecallStrategyConfig strategies = 2;
+  optional uint32 top_k = 3;
+  optional ScoringWeights scoring_weights = 4;
+  google.protobuf.Struct cue_context = 5;
+  optional string tenant_id = 6;
+}
+
+message StrategyDetailMessage {
+  RecallStrategyType strategy_type = 1;
+  float relevance = 2;
+
+  // Similarity
+  optional float distance = 3;
+
+  // Temporal
+  optional uint64 timestamp = 4;
+  optional uint32 rank = 5;
+
+  // Causal
+  optional uint32 depth = 6;
+  optional EdgeType causal_edge_type = 7;
+  optional bytes seed_id = 8;
+
+  // Analogical
+  optional float embedding_similarity = 9;
+  optional float structural_similarity = 10;
+}
+
+message RecallResult {
+  Memory memory = 1;
+  float score = 2;
+  repeated StrategyDetailMessage strategy_details = 3;
+}
+
+message StrategyErrorMessage {
+  RecallStrategyType strategy = 1;
+  string message = 2;
+}
+
+message RecallResponse {
+  repeated RecallResult results = 1;
+  repeated StrategyErrorMessage strategy_errors = 2;
+}
+
+// --- Prime ---
+
+message PrimeRequest {
+  string entity_id = 1;
+  google.protobuf.Struct context = 2;
+  optional uint32 max_memories = 3;
+  optional uint64 recency_window_us = 4;
+  optional string similarity_cue = 5;
+  optional ScoringWeights scoring_weights = 6;
+  optional string tenant_id = 7;
+}
+
+message PrimeResponse {
+  repeated RecallResult results = 1;
+  uint32 temporal_count = 2;
+  uint32 similarity_count = 3;
+}
+
+// --- Revise ---
+
+message ReviseRequest {
+  bytes memory_id = 1;
+  optional string content = 2;
+  optional float importance = 3;
+  google.protobuf.Struct context = 4;
+  ContextMode context_mode = 5;
+  optional string entity_id = 6;
+  repeated Edge edges = 7;
+  optional string tenant_id = 8;
+}
+
+message ReviseResponse {
+  Memory memory = 1;
+}
+
+// --- Forget ---
+
+message ForgetRequest {
+  repeated bytes memory_ids = 1;
+  optional string entity_id = 2;
+  optional uint64 staleness_threshold_us = 3;
+  optional uint64 access_count_floor = 4;
+  optional MemoryKind memory_kind = 5;
+  optional float decay_score_floor = 6;
+  optional string tenant_id = 7;
+}
+
+message ForgetResponse {
+  uint64 forgotten_count = 1;
+  uint64 cascade_count = 2;
+  bool truncated = 3;
+  uint64 tombstone_count = 4;
+}
+
+// --- SetPolicy ---
+
+message SetPolicyRequest {
+  optional string tenant_id = 1;
+  optional uint32 max_snapshots_per_memory = 2;
+  optional float auto_forget_threshold = 3;
+  optional float decay_half_life_days = 4;
+}
+
+message SetPolicyResponse {
+  bool applied = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SubscribeService Messages
+// ═══════════════════════════════════════════════════════════════════════
+
+message SubscribeRequest {
+  optional string entity_id = 1;
+  repeated MemoryKind kind_filter = 2;
+  float confidence_threshold = 3;
+  optional uint64 time_scope_us = 4;
+  optional uint32 output_buffer_size = 5;
+  optional float coarse_threshold = 6;
+  optional string tenant_id = 7;
+}
+
+message SubscribePushMessage {
+  uint64 subscription_id = 1;
+  Memory memory = 2;
+  float confidence = 3;
+  uint64 push_timestamp_us = 4;
+  uint64 sequence_number = 5;
+}
+
+message FeedRequest {
+  uint64 subscription_id = 1;
+  string text = 2;
+  optional string tenant_id = 3;
+}
+
+message FeedResponse {}
+
+message CloseSubscriptionRequest {
+  uint64 subscription_id = 1;
+  optional string tenant_id = 2;
+}
+
+message CloseSubscriptionResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ReflectService Messages
+// ═══════════════════════════════════════════════════════════════════════
+
+message ReflectScope {
+  oneof scope {
+    EntityScope entity = 1;
+    GlobalScope global = 2;
+  }
+}
+
+message EntityScope {
+  string entity_id = 1;
+  optional uint64 since_us = 2;
+}
+
+message GlobalScope {
+  optional uint64 since_us = 1;
+}
+
+message ReflectRequest {
+  ReflectScope scope = 1;
+  optional string tenant_id = 2;
+}
+
+message ReflectResponse {
+  uint64 insights_created = 1;
+  uint64 clusters_found = 2;
+  uint64 clusters_processed = 3;
+  uint64 memories_processed = 4;
+}
+
+message GetInsightsRequest {
+  optional string entity_id = 1;
+  optional float min_confidence = 2;
+  optional uint32 max_results = 3;
+  optional string tenant_id = 4;
+}
+
+message GetInsightsResponse {
+  repeated Memory insights = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Health
+// ═══════════════════════════════════════════════════════════════════════
+
+service HealthService {
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+  string version = 2;
+  uint64 memory_count = 3;
+  uint64 uptime_seconds = 4;
+}

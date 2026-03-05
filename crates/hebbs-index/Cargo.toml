@@ -1,0 +1,22 @@
+[package]
+name = "hebbs-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "BSL-1.1"
+description = "Index layer for HEBBS — temporal, vector (HNSW), and graph indexes"
+
+[dependencies]
+hebbs-storage = { path = "../hebbs-storage" }
+thiserror.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "index_benchmarks"
+harness = false

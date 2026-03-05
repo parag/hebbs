@@ -1,0 +1,17 @@
+[package]
+name = "hebbs-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "BSL-1.1"
+description = "Storage abstraction layer for HEBBS — the cognitive memory engine"
+
+[dependencies]
+thiserror.workspace = true
+rocksdb.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+rand.workspace = true

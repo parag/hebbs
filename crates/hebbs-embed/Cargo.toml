@@ -1,0 +1,36 @@
+[package]
+name = "hebbs-embed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "BSL-1.1"
+description = "Embedding engine for HEBBS — local ONNX Runtime inference and pluggable providers"
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+ort.workspace = true
+tokenizers.workspace = true
+ndarray.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+criterion.workspace = true
+proptest.workspace = true
+rand.workspace = true
+
+[features]
+default = []
+coreml = ["ort/coreml"]
+cuda = ["ort/cuda"]
+directml = ["ort/directml"]
+external-embeddings = []
+
+[[bench]]
+name = "embed_benchmarks"
+harness = false

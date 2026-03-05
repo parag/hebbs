@@ -1,0 +1,25 @@
+[package]
+name = "hebbs-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "BSL-1.1"
+repository.workspace = true
+description = "Benchmark suite CLI for HEBBS cognitive memory engine"
+
+[[bin]]
+name = "hebbs-bench"
+path = "src/main.rs"
+
+[dependencies]
+hebbs-core = { path = "../hebbs-core" }
+hebbs-storage = { path = "../hebbs-storage" }
+hebbs-embed = { path = "../hebbs-embed" }
+hebbs-index = { path = "../hebbs-index" }
+hebbs-reflect = { path = "../hebbs-reflect" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+rand = { workspace = true }
+libc = { workspace = true }

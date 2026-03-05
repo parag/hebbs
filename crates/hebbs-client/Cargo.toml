@@ -1,0 +1,26 @@
+[package]
+name = "hebbs-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "Async Rust client SDK for HEBBS cognitive memory engine"
+
+[dependencies]
+hebbs-proto = { path = "../hebbs-proto" }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+prost = { workspace = true }
+prost-types = { workspace = true }
+ulid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
