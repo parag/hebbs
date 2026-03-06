@@ -152,6 +152,7 @@ fn proto_strategy_detail_to_domain(
             embedding_similarity: d.embedding_similarity.unwrap_or(0.0),
             structural_similarity: d.structural_similarity.unwrap_or(0.0),
             relevance: d.relevance,
+            used_vector_analogy: false,
         }),
         _ => Err(format!("unspecified strategy type: {}", d.strategy_type)),
     }

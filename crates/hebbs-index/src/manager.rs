@@ -6,6 +6,7 @@ use parking_lot::RwLock;
 
 use hebbs_storage::{BatchOperation, ColumnFamilyName, StorageBackend};
 
+use crate::associative::AssociativeIndex;
 use crate::error::{IndexError, Result};
 use crate::graph::{EdgeMetadata, EdgeType, GraphIndex, TraversalEntry};
 use crate::hnsw::{HnswGraph, HnswNode, HnswParams};
@@ -61,6 +62,8 @@ pub struct IndexManager {
     hnsw_graphs: RwLock<HashMap<String, (HnswGraph, Instant)>>,
     temporal: TemporalIndex,
     graph: GraphIndex,
+    /// Per-tenant associative HNSW graphs with Hebbian-learned embeddings.
+    pub assoc_index: AssociativeIndex,
 }
 
 impl IndexManager {
@@ -87,6 +90,8 @@ impl IndexManager {
             }
         }
 
+        let assoc_index = AssociativeIndex::new(storage.clone(), hnsw_params.clone())?;
+
         let mut graphs = HashMap::new();
         graphs.insert(DEFAULT_TENANT.to_string(), (hnsw, Instant::now()));
 
@@ -96,6 +101,7 @@ impl IndexManager {
             hnsw_graphs: RwLock::new(graphs),
             temporal,
             graph,
+            assoc_index,
         })
     }
 
@@ -109,6 +115,9 @@ impl IndexManager {
         let graph = GraphIndex::new(storage.clone());
         let hnsw = HnswGraph::new_with_seed(hnsw_params.clone(), seed);
 
+        let assoc_index =
+            AssociativeIndex::new_with_seed(storage.clone(), hnsw_params.clone(), seed)?;
+
         let mut graphs = HashMap::new();
         graphs.insert(DEFAULT_TENANT.to_string(), (hnsw, Instant::now()));
 
@@ -118,6 +127,7 @@ impl IndexManager {
             hnsw_graphs: RwLock::new(graphs),
             temporal,
             graph,
+            assoc_index,
         })
     }
 
@@ -140,6 +150,7 @@ impl IndexManager {
         &self,
         memory_id: &[u8; 16],
         embedding: &[f32],
+        assoc_embedding: &[f32],
         entity_id: Option<&str>,
         created_at: u64,
         edges: &[EdgeInput],
@@ -195,7 +206,10 @@ impl IndexManager {
             value: temp_node.serialize(),
         });
 
-        // 3. Graph CF entries
+        // 3. VectorsAssociative CF entry
+        ops.push(self.assoc_index.prepare_assoc_insert(memory_id, assoc_embedding));
+
+        // 4. Graph CF entries
         let metadata = EdgeMetadata::new(1.0, created_at);
         let meta_bytes = metadata.to_bytes();
 
@@ -260,6 +274,30 @@ impl IndexManager {
         Ok(())
     }
 
+    // ─── Associative index methods ────────────────────────────────────
+
+    /// Commit the associative HNSW insert for a specific tenant.
+    pub fn commit_assoc_insert_for_tenant(
+        &self,
+        tenant_id: &str,
+        memory_id: [u8; 16],
+        assoc_embedding: Vec<f32>,
+    ) -> Result<()> {
+        self.assoc_index
+            .insert_for_tenant(tenant_id, memory_id, assoc_embedding)
+    }
+
+    /// Hebbian update for a specific edge type.
+    pub fn update_type_offset_from_edge(
+        &self,
+        edge_type: EdgeType,
+        a_source: &[f32],
+        a_target: &[f32],
+    ) -> Result<()> {
+        self.assoc_index
+            .update_type_offset(edge_type, a_source, a_target, 0.1)
+    }
+
     // ─── Prepare/Commit for DELETE ───────────────────────────────────
 
     /// Prepare WriteBatch operations for deleting a memory from all indexes.
@@ -301,7 +339,10 @@ impl IndexManager {
             key: memory_id.to_vec(),
         });
 
-        // 4. Graph CF — collect all edge keys touching this memory
+        // 4. VectorsAssociative CF
+        ops.push(self.assoc_index.prepare_delete(memory_id));
+
+        // 5. Graph CF — collect all edge keys touching this memory
         let edge_keys = self.graph.collect_edge_keys_for_delete(memory_id)?;
         for key in edge_keys {
             ops.push(BatchOperation::Delete {
@@ -332,6 +373,7 @@ impl IndexManager {
             *last_access = Instant::now();
             graph.mark_deleted(memory_id);
         }
+        self.assoc_index.commit_delete_for_tenant(tenant_id, memory_id);
     }
 
     // ─── Prepare/Commit for UPDATE (Phase 5) ────────────────────────
@@ -745,11 +787,11 @@ mod tests {
         let embedding = normalized_vec(8, 1);
 
         let (ops, _node) = mgr
-            .prepare_insert(&id, &embedding, Some("entity_1"), 1000, &[])
+            .prepare_insert(&id, &embedding, &embedding, Some("entity_1"), 1000, &[])
             .unwrap();
 
-        // Should have: temporal CF put + vectors CF put
-        assert_eq!(ops.len(), 2);
+        // Should have: temporal CF put + vectors CF put + assoc CF put
+        assert_eq!(ops.len(), 3);
         let cfs: Vec<ColumnFamilyName> = ops
             .iter()
             .map(|op| match op {
@@ -768,11 +810,11 @@ mod tests {
         let embedding = normalized_vec(8, 1);
 
         let (ops, _) = mgr
-            .prepare_insert(&id, &embedding, None, 1000, &[])
+            .prepare_insert(&id, &embedding, &embedding, None, 1000, &[])
             .unwrap();
 
-        // Only vectors CF
-        assert_eq!(ops.len(), 1);
+        // vectors CF + assoc CF
+        assert_eq!(ops.len(), 2);
     }
 
     #[test]
@@ -794,11 +836,11 @@ mod tests {
         ];
 
         let (ops, _) = mgr
-            .prepare_insert(&id, &embedding, Some("e1"), 1000, &edges)
+            .prepare_insert(&id, &embedding, &embedding, Some("e1"), 1000, &edges)
             .unwrap();
 
-        // temporal(1) + vectors(1) + edges(2 * 2 forward+reverse) = 6
-        assert_eq!(ops.len(), 6);
+        // temporal(1) + vectors(1) + assoc(1) + edges(2 * 2 forward+reverse) = 7
+        assert_eq!(ops.len(), 7);
     }
 
     #[test]
@@ -812,7 +854,7 @@ mod tests {
 
         // Prepare
         let (ops, _) = mgr
-            .prepare_insert(&id, &embedding, Some("entity_1"), 1000, &[])
+            .prepare_insert(&id, &embedding, &embedding, Some("entity_1"), 1000, &[])
             .unwrap();
 
         // Execute WriteBatch (plus default CF put, which the engine handles)
@@ -844,7 +886,7 @@ mod tests {
         let id = make_id(1);
         let embedding = normalized_vec(16, 1);
         let (ops, _) = mgr
-            .prepare_insert(&id, &embedding, Some("entity_1"), 1000, &[])
+            .prepare_insert(&id, &embedding, &embedding, Some("entity_1"), 1000, &[])
             .unwrap();
 
         // Also write to default CF (simulating engine)
@@ -890,7 +932,7 @@ mod tests {
             let embedding = normalized_vec(16, i as u64);
 
             let (ops, _) = mgr
-                .prepare_insert(&id, &embedding, Some("entity"), i as u64 * 100, &[])
+                .prepare_insert(&id, &embedding, &embedding, Some("entity"), i as u64 * 100, &[])
                 .unwrap();
             storage.write_batch(&ops).unwrap();
             mgr.commit_insert(id, embedding).unwrap();
@@ -920,7 +962,7 @@ mod tests {
         let id = make_id(1);
         let wrong_dims = vec![1.0; 16]; // 16 dims, expect 8
 
-        let result = mgr.prepare_insert(&id, &wrong_dims, None, 1000, &[]);
+        let result = mgr.prepare_insert(&id, &wrong_dims, &wrong_dims, None, 1000, &[]);
         assert!(matches!(result, Err(IndexError::DimensionMismatch { .. })));
     }
 
@@ -937,7 +979,7 @@ mod tests {
             let id = make_id(i);
             let embedding = normalized_vec(8, i as u64);
             let (ops, _) = mgr
-                .prepare_insert(&id, &embedding, None, 1000, &[])
+                .prepare_insert(&id, &embedding, &embedding, None, 1000, &[])
                 .unwrap();
             storage.write_batch(&ops).unwrap();
             mgr.commit_insert(id, embedding).unwrap();
@@ -975,7 +1017,7 @@ mod tests {
                 let id = make_id(i);
                 let embedding = normalized_vec(dims, i as u64);
                 let (ops, _) = mgr
-                    .prepare_insert(&id, &embedding, None, 1000, &[])
+                    .prepare_insert(&id, &embedding, &embedding, None, 1000, &[])
                     .unwrap();
                 storage.write_batch(&ops).unwrap();
                 mgr.commit_insert(id, embedding).unwrap();

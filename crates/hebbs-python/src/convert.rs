@@ -143,6 +143,7 @@ fn strategy_detail_to_py(py: Python<'_>, d: &StrategyDetail) -> PyResult<PyObjec
             embedding_similarity,
             structural_similarity,
             relevance,
+            ..
         } => {
             dict.set_item("strategy", "analogical")?;
             dict.set_item("embedding_similarity", *embedding_similarity)?;

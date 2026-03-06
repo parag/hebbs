@@ -34,8 +34,9 @@ fn make_clustered_memories(cluster_count: usize, per_cluster: usize, d: usize) -
                 content: format!("Cluster {c} memory {idx}"),
                 importance: 0.6,
                 entity_id: Some("bench".into()),
-                embedding: emb,
+                embedding: emb.clone(),
                 created_at: 1_000_000 * idx as u64,
+                assoc_embedding: emb,
             });
             idx += 1;
         }

@@ -101,6 +101,15 @@ impl SubscribeService for SubscribeServiceImpl {
         let subscriptions = self.subscriptions.clone();
         let metrics = self.metrics.clone();
 
+        let handshake = pb::SubscribePushMessage {
+            subscription_id,
+            memory: None,
+            confidence: 0.0,
+            push_timestamp_us: 0,
+            sequence_number: 0,
+        };
+        let _ = push_tx.send(Ok(handshake)).await;
+
         tokio::spawn(async move {
             let mut sequence: u64 = 0;
 

@@ -162,6 +162,9 @@ pub fn json_to_recall_input(cue: &str, opts_json: &str) -> Result<RecallInput, S
         ef_search,
         scoring_weights: None,
         cue_context,
+        causal_direction: None,
+        analogy_a_id: None,
+        analogy_b_id: None,
     })
 }
 
@@ -247,11 +250,13 @@ fn strategy_detail_to_json(d: &StrategyDetail) -> serde_json::Value {
             embedding_similarity,
             structural_similarity,
             relevance,
+            used_vector_analogy,
         } => serde_json::json!({
             "strategy": "analogical",
             "embedding_similarity": embedding_similarity,
             "structural_similarity": structural_similarity,
             "relevance": relevance,
+            "used_vector_analogy": used_vector_analogy,
         }),
     }
 }

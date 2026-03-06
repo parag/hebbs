@@ -444,13 +444,16 @@ fn memory_to_entry(m: &Memory) -> MemoryEntry {
     let mut id = [0u8; 16];
     let len = m.memory_id.len().min(16);
     id[..len].copy_from_slice(&m.memory_id[..len]);
+    let content_emb = m.embedding.clone().unwrap_or_default();
+    let assoc_emb = m.associative_embedding.clone().unwrap_or_else(|| content_emb.clone());
     MemoryEntry {
         id,
         content: m.content.clone(),
         importance: m.importance,
         entity_id: m.entity_id.clone(),
-        embedding: m.embedding.clone().unwrap_or_default(),
+        embedding: content_emb,
         created_at: m.created_at,
+        assoc_embedding: assoc_emb,
     }
 }
 
@@ -515,6 +518,7 @@ fn store_insight(
         kind: MemoryKind::Insight,
         device_id: None,
         logical_clock: 0,
+        associative_embedding: Some(embedding.clone()),
     };
 
     let edge_inputs: Vec<EdgeInput> = produced
@@ -529,6 +533,7 @@ fn store_insight(
 
     let (index_ops, _temp_node) = index_manager.prepare_insert(
         &memory_id,
+        &embedding,
         &embedding,
         entity_id.as_deref(),
         now_us,

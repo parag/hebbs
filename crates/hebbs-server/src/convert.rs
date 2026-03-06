@@ -250,6 +250,9 @@ pub fn proto_to_recall_input(req: pb::RecallRequest) -> Result<RecallInput, Stri
         ef_search,
         scoring_weights,
         cue_context,
+        causal_direction: None,
+        analogy_a_id: None,
+        analogy_b_id: None,
     })
 }
 
@@ -315,6 +318,7 @@ fn strategy_detail_to_proto(d: &StrategyDetail) -> pb::StrategyDetailMessage {
             embedding_similarity,
             structural_similarity,
             relevance,
+            ..
         } => pb::StrategyDetailMessage {
             strategy_type: pb::RecallStrategyType::Analogical as i32,
             relevance: *relevance,

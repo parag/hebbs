@@ -1723,6 +1723,7 @@ mod tests {
                 kind: MemoryKind::Episode,
                 device_id: None,
                 logical_clock: 0,
+                associative_embedding: None,
             },
             confidence,
             push_timestamp_us: 1_000_000,

@@ -292,6 +292,7 @@ pub enum StrategyDetail {
         embedding_similarity: f32,
         structural_similarity: f32,
         relevance: f32,
+        used_vector_analogy: bool,
     },
 }
 

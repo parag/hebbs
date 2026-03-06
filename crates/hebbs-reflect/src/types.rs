@@ -10,6 +10,7 @@ pub struct MemoryEntry {
     pub entity_id: Option<String>,
     pub embedding: Vec<f32>,
     pub created_at: u64,
+    pub assoc_embedding: Vec<f32>,
 }
 
 /// Input to the reflection pipeline.

@@ -2336,6 +2336,9 @@ fn insights_are_recallable() {
             ef_search: None,
             scoring_weights: None,
             cue_context: None,
+            causal_direction: None,
+            analogy_a_id: None,
+            analogy_b_id: None,
         })
         .unwrap();
 

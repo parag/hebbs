@@ -128,7 +128,7 @@ fn bench_hnsw_rebuild(c: &mut Criterion) {
             let id = make_id(i);
             let embedding = normalized_vec(dims, i as u64);
             let (ops, _) = mgr
-                .prepare_insert(&id, &embedding, None, 1000, &[])
+                .prepare_insert(&id, &embedding, &embedding, None, 1000, &[])
                 .unwrap();
             storage.write_batch(&ops).unwrap();
             mgr.commit_insert(id, embedding).unwrap();

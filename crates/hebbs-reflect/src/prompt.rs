@@ -163,6 +163,7 @@ mod tests {
             entity_id: Some("test".into()),
             embedding: vec![0.0; 16],
             created_at: 1_000_000 * idx as u64,
+            assoc_embedding: vec![0.0; 16],
         }
     }
 

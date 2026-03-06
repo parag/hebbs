@@ -138,6 +138,10 @@ pub struct Memory {
 
     /// Monotonically increasing per-device clock for conflict resolution.
     pub logical_clock: u64,
+
+    /// Associative embedding that evolves via Hebbian updates as edges are created.
+    /// Initially equals the content embedding. `None` for legacy records.
+    pub associative_embedding: Option<Vec<f32>>,
 }
 
 /// Maximum content length in bytes (64 KB).
@@ -256,6 +260,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         }
     }
 
@@ -311,6 +316,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
         let bytes = mem.to_bytes();
         let restored = Memory::from_bytes(&bytes).unwrap();
@@ -372,6 +378,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
         assert!(mem.context().unwrap().is_empty());
     }

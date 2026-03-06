@@ -47,6 +47,23 @@ pub enum RecallStrategy {
     Analogical,
 }
 
+/// Direction for causal graph traversal using the associative HNSW.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CausalDirection {
+    /// Follow edges from cause to effect (forward direction).
+    Forward,
+    /// Follow edges from effect to cause (backward direction).
+    Backward,
+    /// Search both directions and merge results.
+    Both,
+}
+
+impl Default for CausalDirection {
+    fn default() -> Self {
+        Self::Both
+    }
+}
+
 /// Input for the `recall()` operation.
 ///
 /// The cue is required. Strategy selection is explicit (Principle 3:
@@ -87,6 +104,15 @@ pub struct RecallInput {
     /// Structured context for the cue. Used by analogical strategy for
     /// structural similarity comparison.
     pub cue_context: Option<HashMap<String, serde_json::Value>>,
+
+    /// Direction for causal traversal. Defaults to Both (bidirectional).
+    pub causal_direction: Option<CausalDirection>,
+
+    /// Memory A for analogical recall (A:B::C:?). Enables vector arithmetic.
+    pub analogy_a_id: Option<[u8; 16]>,
+
+    /// Memory B for analogical recall (A:B::C:?). Enables vector arithmetic.
+    pub analogy_b_id: Option<[u8; 16]>,
 }
 
 impl RecallInput {
@@ -103,6 +129,9 @@ impl RecallInput {
             ef_search: None,
             scoring_weights: None,
             cue_context: None,
+            causal_direction: None,
+            analogy_a_id: None,
+            analogy_b_id: None,
         }
     }
 
@@ -119,6 +148,9 @@ impl RecallInput {
             ef_search: None,
             scoring_weights: None,
             cue_context: None,
+            causal_direction: None,
+            analogy_a_id: None,
+            analogy_b_id: None,
         }
     }
 }
@@ -231,6 +263,8 @@ pub enum StrategyDetail {
         structural_similarity: f32,
         /// Combined analogical relevance.
         relevance: f32,
+        /// Whether the result was found via vector arithmetic (assoc HNSW).
+        used_vector_analogy: bool,
     },
 }
 

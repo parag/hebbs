@@ -73,6 +73,7 @@ fn arb_memory() -> impl Strategy<Value = Memory> {
                 kind,
                 device_id,
                 logical_clock,
+                associative_embedding: None,
             }
         },
     )
@@ -140,6 +141,7 @@ proptest! {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
 
         let bytes = mem.to_bytes();

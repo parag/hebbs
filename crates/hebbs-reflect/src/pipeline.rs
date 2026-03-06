@@ -32,8 +32,19 @@ impl ReflectPipeline {
         }
 
         // ── Stage 1: Clustering ──────────────────────────────────────
-        let embeddings: Vec<Vec<f32>> =
-            input.memories.iter().map(|m| m.embedding.clone()).collect();
+        // Cluster in associative space (relational roles); fall back to content embedding for
+        // legacy memories that have no assoc_embedding yet.
+        let embeddings: Vec<Vec<f32>> = input
+            .memories
+            .iter()
+            .map(|m| {
+                if m.assoc_embedding.is_empty() {
+                    m.embedding.clone()
+                } else {
+                    m.assoc_embedding.clone()
+                }
+            })
+            .collect();
 
         let cluster_config = ClusterConfig {
             min_cluster_size: input.config.min_cluster_size,
@@ -313,8 +324,9 @@ mod tests {
                     content: format!("Memory about topic {} with detail {}", i % 3, i),
                     importance: 0.5 + (i % 5) as f32 * 0.1,
                     entity_id: Some("test_entity".into()),
-                    embedding: emb,
+                    embedding: emb.clone(),
                     created_at: 1_000_000 * i as u64,
+                    assoc_embedding: emb,
                 }
             })
             .collect()
@@ -354,8 +366,9 @@ mod tests {
                     content: format!("Cluster {c} memory about topic {}", idx),
                     importance: 0.6,
                     entity_id: Some("entity_a".into()),
-                    embedding: emb,
+                    embedding: emb.clone(),
                     created_at: 1_000_000 * idx as u64,
+                    assoc_embedding: emb,
                 });
                 idx += 1;
             }

@@ -365,6 +365,9 @@ async fn recall_handler(
         ef_search: None,
         scoring_weights: None,
         cue_context: None,
+        causal_direction: None,
+        analogy_a_id: None,
+        analogy_b_id: None,
     };
 
     let engine = state.engine.clone();

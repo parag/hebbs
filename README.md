@@ -37,31 +37,46 @@ HEBBS moves beyond storage into cognition: importance-driven encoding, multi-pat
 ### Install
 
 ```bash
-# macOS / Linux
+# macOS (Apple Silicon) / Linux (x86_64 / aarch64)
 curl -sSf https://hebbs.ai/install | sh
+export PATH="$HOME/.hebbs/bin:$PATH"
+```
 
-# Docker
-docker run -p 6380:6380 hebbs-ai/hebbs
+Pin a version or change the install directory:
 
-# Or embed as a library (no separate process)
+```bash
+HEBBS_VERSION=v0.1.0 curl -sSf https://hebbs.ai/install | sh
+HEBBS_INSTALL_DIR=/usr/local/bin curl -sSf https://hebbs.ai/install | sh
+```
+
+### Start the Server
+
+```bash
+hebbs-server                      # start on localhost:6380 (gRPC) + :6381 (HTTP)
+hebbs-cli remember "hello world"  # store a memory
+hebbs-cli recall "hello"          # recall it
+```
+
+### Connect from Python
+
+```bash
 pip install hebbs
 ```
 
-### Connect
-
 ```python
-from hebbs import HEBBS
+from hebbs import HebbsClient
 
-e = HEBBS("localhost:6380")
+client = HebbsClient("localhost:6380")
 ```
 
 ### Remember
 
 ```python
-e.remember(
-    experience="Prospect mentioned competitor contract expires March 15",
+await client.remember(
+    content="Prospect mentioned competitor contract expires March 15",
     importance=0.95,
-    context={"prospect_id": "acme", "stage": "discovery", "signal": "urgency"}
+    entity_id="acme",
+    context={"stage": "discovery", "signal": "urgency"},
 )
 ```
 
@@ -69,45 +84,42 @@ e.remember(
 
 ```python
 # What happened with this prospect? (Temporal)
-history = e.recall(cue={"prospect_id": "acme"}, strategy="temporal")
+history = await client.recall(cue="acme engagement", strategy="temporal", entity_id="acme")
 
 # How should I handle this objection? (Similarity)
-responses = e.recall(cue="we built this in-house", strategy="similarity")
+responses = await client.recall(cue="we built this in-house", strategy="similarity")
 
 # Why did the last similar deal fall through? (Causal)
-causes = e.recall(cue="deal lost after pricing", strategy="causal")
+causes = await client.recall(cue="deal lost after pricing", strategy="causal")
 
 # I've never sold to healthcare -- what's transferable? (Analogical)
-patterns = e.recall(cue="healthcare compliance objection", strategy="analogical")
+patterns = await client.recall(cue="healthcare compliance objection", strategy="analogical")
 ```
 
-### Subscribe (Associative / Real-time)
+### Subscribe (Real-time)
 
 ```python
-# The engine pushes relevant memories as your agent processes input.
-# No explicit recall needed -- knowledge surfaces automatically.
-
-for memory in e.subscribe(input_stream=call_transcript, threshold=0.8):
-    inject_into_agent_context(memory)
+sub = await client.subscribe(entity_id="acme", confidence_threshold=0.8)
+await sub.feed("They just mentioned compliance concerns again")
+async for push in sub:
+    inject_into_agent_context(push.memory)
 ```
 
 ### Reflect
 
 ```python
-# Configure background consolidation. HEBBS learns while your agent sleeps.
-e.reflect_policy({
-    "triggers": [
-        {"type": "threshold", "new_memories": 50},
-        {"type": "schedule", "interval": "daily"},
-        {"type": "recall_failure", "confidence_below": 0.3},
-        {"type": "metric_drift", "metric": "conversion_rate", "delta": 0.2}
-    ],
-    "strategy": "hybrid",
-    "scope": "incremental"
-})
+result = await client.reflect()
+insights = await client.insights(entity_id="acme", max_results=10)
+```
 
-# Query distilled knowledge
-insights = e.insights(filter={"topic": "objection handling", "min_confidence": 0.8})
+### Reference Demo
+
+The [hebbs-python](https://github.com/hebbs-ai/hebbs-python) repo includes a full AI Sales Intelligence Agent demo with 7 scripted scenarios, 5 LLM providers, and Rich terminal panels showing every HEBBS operation in real time.
+
+```bash
+pip install hebbs[demo]
+hebbs-demo interactive --config gemini-vertex --verbosity verbose
+hebbs-demo scenarios --all
 ```
 
 ---
@@ -234,7 +246,8 @@ Benchmarked on a single `c6g.large` instance (2 vCPU, 4GB RAM) with 10M stored m
 ### Standalone Server (the Redis model)
 
 ```bash
-hebbs-server --port 6380 --data ./hebbs-data
+hebbs-server                                   # defaults: gRPC :6380, HTTP :6381, data ./hebbs-data
+HEBBS_AUTH_ENABLED=true hebbs-server            # with API key authentication
 ```
 
 ### Embedded Library (the SQLite model)
@@ -256,12 +269,10 @@ Same API, different configuration. A Jetson Orin, MacBook, or Intel laptop runs 
 
 | Language | Package | Status |
 |---|---|---|
-| Python | `pip install hebbs` | Stable |
-| TypeScript | `npm install @hebbs/client` | Stable |
-| Rust | `hebbs` crate | Stable |
-| Go | `go get hebbs.ai/client` | Beta |
-
-Python supports both server mode (gRPC) and embedded mode (PyO3, no separate process).
+| Python | `pip install hebbs` | Stable (gRPC + embedded via PyO3) |
+| TypeScript | `npm install @hebbs/client` | Planned |
+| Rust | `hebbs` crate (direct) | Stable |
+| Go | `go get hebbs.ai/client` | Planned |
 
 ---
 

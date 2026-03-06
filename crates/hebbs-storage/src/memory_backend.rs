@@ -20,6 +20,7 @@ pub struct InMemoryBackend {
     vectors: RwLock<BTreeMap<Vec<u8>, Vec<u8>>>,
     graph: RwLock<BTreeMap<Vec<u8>, Vec<u8>>>,
     meta: RwLock<BTreeMap<Vec<u8>, Vec<u8>>>,
+    vectors_associative: RwLock<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl InMemoryBackend {
@@ -30,6 +31,7 @@ impl InMemoryBackend {
             vectors: RwLock::new(BTreeMap::new()),
             graph: RwLock::new(BTreeMap::new()),
             meta: RwLock::new(BTreeMap::new()),
+            vectors_associative: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -40,6 +42,7 @@ impl InMemoryBackend {
             ColumnFamilyName::Vectors => &self.vectors,
             ColumnFamilyName::Graph => &self.graph,
             ColumnFamilyName::Meta => &self.meta,
+            ColumnFamilyName::VectorsAssociative => &self.vectors_associative,
         }
     }
 }
@@ -80,7 +83,7 @@ impl StorageBackend for InMemoryBackend {
             puts: Vec<(Vec<u8>, Vec<u8>)>,
             deletes: Vec<Vec<u8>>,
         }
-        let mut per_cf: [Option<CfMutations>; 5] = Default::default();
+        let mut per_cf: [Option<CfMutations>; 6] = Default::default();
 
         for op in operations {
             let (_cf, idx) = match op {
@@ -110,6 +113,7 @@ impl StorageBackend for InMemoryBackend {
                     2 => ColumnFamilyName::Vectors,
                     3 => ColumnFamilyName::Graph,
                     4 => ColumnFamilyName::Meta,
+                    5 => ColumnFamilyName::VectorsAssociative,
                     _ => unreachable!(),
                 };
                 let mut map = self.get_cf(cf).write();

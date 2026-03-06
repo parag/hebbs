@@ -22,9 +22,10 @@ use crate::forget::{
 use crate::keys;
 use crate::memory::{Memory, MemoryKind, DEFAULT_IMPORTANCE, MAX_CONTENT_LENGTH, MAX_CONTEXT_SIZE};
 use crate::recall::{
-    AnalogicalWeights, PrimeInput, PrimeOutput, RecallInput, RecallOutput, RecallResult,
-    RecallStrategy, ScoringWeights, StrategyDetail, StrategyError, StrategyOutcome, StrategyResult,
-    DEFAULT_PRIME_RECENCY_WINDOW_US, MAX_PRIME_MEMORIES, MAX_TOP_K, MAX_TRAVERSAL_DEPTH,
+    AnalogicalWeights, CausalDirection, PrimeInput, PrimeOutput, RecallInput, RecallOutput,
+    RecallResult, RecallStrategy, ScoringWeights, StrategyDetail, StrategyError, StrategyOutcome,
+    StrategyResult, DEFAULT_PRIME_RECENCY_WINDOW_US, MAX_PRIME_MEMORIES, MAX_TOP_K,
+    MAX_TRAVERSAL_DEPTH,
 };
 use crate::reflect::{
     self, spawn_reflect_worker, InsightsFilter, ReflectConfig, ReflectHandle, ReflectRunOutput,
@@ -330,6 +331,9 @@ impl Engine {
         let embedding = self.embedder.embed(&input.content)?;
         let embed_duration_us = embed_start.elapsed().as_micros() as u64;
 
+        // Associative embedding starts equal to content embedding.
+        let assoc_embedding = embedding.clone();
+
         let ulid = self
             .ulid_gen
             .lock()
@@ -358,6 +362,7 @@ impl Engine {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: Some(assoc_embedding.clone()),
         };
 
         let edge_inputs: Vec<EdgeInput> = input
@@ -373,6 +378,7 @@ impl Engine {
         let (index_ops, _temp_node) = self.index_manager.prepare_insert(
             &memory_id,
             &embedding,
+            &assoc_embedding,
             memory.entity_id.as_deref(),
             now_us,
             &edge_inputs,
@@ -391,7 +397,29 @@ impl Engine {
 
         storage.write_batch(&all_ops)?;
 
-        self.index_manager.commit_insert(memory_id, embedding)?;
+        // Main HNSW is global — similarity isolation is enforced by TenantScopedStorage at read
+        // time (cross-tenant memory IDs fail to load and are silently skipped).
+        // Assoc HNSW is per-tenant — causal/analogy traversal must not leak across tenants.
+        self.index_manager.commit_insert(memory_id, embedding.clone())?;
+        self.index_manager
+            .commit_assoc_insert_for_tenant(tenant.tenant_id(), memory_id, assoc_embedding.clone())?;
+
+        // Hebbian update: for each edge, learn the type offset from source to target.
+        for edge in &edge_inputs {
+            if let Ok(target_mem) = Self::get_from_storage(&*storage, &edge.target_id) {
+                let target_assoc = target_mem
+                    .associative_embedding
+                    .as_deref()
+                    .or(target_mem.embedding.as_deref());
+                if let Some(ta) = target_assoc {
+                    let _ = self.index_manager.update_type_offset_from_edge(
+                        edge.edge_type,
+                        &assoc_embedding,
+                        ta,
+                    );
+                }
+            }
+        }
 
         self.subscribe_registry.notify_new_write(memory_id);
 
@@ -724,6 +752,10 @@ impl Engine {
             top_k,
             ef_search: input.ef_search,
             cue_context: input.cue_context.as_ref(),
+            tenant_id: tenant.tenant_id(),
+            causal_direction: input.causal_direction.unwrap_or_default(),
+            analogy_a_id: input.analogy_a_id,
+            analogy_b_id: input.analogy_b_id,
         };
 
         let outcomes = if input.strategies.len() == 1 {
@@ -1062,6 +1094,7 @@ impl Engine {
             kind: existing.kind,
             device_id: existing.device_id.clone(),
             logical_clock: existing.logical_clock,
+            associative_embedding: existing.associative_embedding.clone(),
         };
 
         // --- Apply updates to create the revised memory ---
@@ -1132,6 +1165,7 @@ impl Engine {
             kind: MemoryKind::Revision,
             device_id: existing.device_id.clone(),
             logical_clock: existing.logical_clock.saturating_add(1),
+            associative_embedding: existing.associative_embedding.clone(),
         };
 
         // --- Prepare index operations ---
@@ -1911,6 +1945,8 @@ impl Engine {
                 ctx.edge_types,
                 ctx.max_depth,
                 ctx.top_k,
+                ctx.tenant_id,
+                &ctx.causal_direction,
             ),
             RecallStrategy::Analogical => self.execute_analogical(
                 storage,
@@ -1918,6 +1954,9 @@ impl Engine {
                 ctx.top_k,
                 ctx.ef_search,
                 ctx.cue_context,
+                ctx.tenant_id,
+                ctx.analogy_a_id,
+                ctx.analogy_b_id,
             ),
         }
     }
@@ -2085,6 +2124,8 @@ impl Engine {
         edge_types: Option<&[EdgeType]>,
         max_depth: usize,
         top_k: usize,
+        tenant_id: &str,
+        direction: &CausalDirection,
     ) -> StrategyOutcome {
         let seed_id = if cue.len() == 32 && cue.chars().all(|c| c.is_ascii_hexdigit()) {
             match hex::decode(cue) {
@@ -2100,14 +2141,18 @@ impl Engine {
                     id
                 }
                 _ => {
-                    return self.causal_by_embedding(storage, cue_embedding, edge_types, max_depth, top_k);
+                    return self.causal_by_embedding(
+                        storage, cue_embedding, edge_types, max_depth, top_k, tenant_id, direction,
+                    );
                 }
             }
         } else {
-            return self.causal_by_embedding(storage, cue_embedding, edge_types, max_depth, top_k);
+            return self.causal_by_embedding(
+                storage, cue_embedding, edge_types, max_depth, top_k, tenant_id, direction,
+            );
         };
 
-        self.causal_from_seed(storage, seed_id, edge_types, max_depth, top_k)
+        self.causal_from_seed(storage, seed_id, edge_types, max_depth, top_k, tenant_id, direction)
     }
 
     fn causal_by_embedding(
@@ -2117,6 +2162,8 @@ impl Engine {
         edge_types: Option<&[EdgeType]>,
         max_depth: usize,
         top_k: usize,
+        tenant_id: &str,
+        direction: &CausalDirection,
     ) -> StrategyOutcome {
         let embedding = match cue_embedding {
             Some(e) => e,
@@ -2142,7 +2189,7 @@ impl Engine {
             }
         };
 
-        self.causal_from_seed(storage, closest, edge_types, max_depth, top_k)
+        self.causal_from_seed(storage, closest, edge_types, max_depth, top_k, tenant_id, direction)
     }
 
     fn causal_from_seed(
@@ -2152,6 +2199,8 @@ impl Engine {
         edge_types: Option<&[EdgeType]>,
         max_depth: usize,
         top_k: usize,
+        tenant_id: &str,
+        direction: &CausalDirection,
     ) -> StrategyOutcome {
         let default_edge_types = vec![
             EdgeType::CausedBy,
@@ -2162,44 +2211,113 @@ impl Engine {
         ];
         let types = edge_types.unwrap_or(&default_edge_types);
 
-        let (traversal_entries, _truncated) = match self
-            .index_manager
-            .traverse(&seed_id, types, max_depth, top_k)
-        {
-            Ok(r) => r,
+        // Load the seed memory's associative embedding
+        let seed_mem = match Self::get_from_storage(storage, &seed_id) {
+            Ok(m) => m,
             Err(e) => {
                 return StrategyOutcome::Err(
                     RecallStrategy::Causal,
-                    format!("graph traversal failed: {}", e),
+                    format!("causal seed memory load failed: {}", e),
                 );
             }
         };
+        let seed_assoc: Vec<f32> = seed_mem
+            .associative_embedding
+            .clone()
+            .or_else(|| seed_mem.embedding.clone())
+            .unwrap_or_default();
 
-        let max_depth_f32 = max_depth as f32;
-        let mut results = Vec::with_capacity(traversal_entries.len());
-        for entry in &traversal_entries {
-            match Self::get_from_storage(storage, &entry.memory_id) {
-                Ok(mem) => {
-                    let relevance = if max_depth_f32 > 0.0 {
-                        (1.0 - (entry.depth as f32 / max_depth_f32)).max(0.0)
-                    } else {
-                        1.0
-                    };
-                    results.push(StrategyResult {
-                        memory: mem,
-                        relevance,
-                        detail: StrategyDetail::Causal {
-                            depth: entry.depth,
-                            edge_type: entry.edge_type,
-                            seed_id,
-                            relevance,
-                        },
-                    });
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(seed_id);
+        let mut results: Vec<StrategyResult> = Vec::new();
+
+        if seed_assoc.is_empty() {
+            // No associative embedding: fall back to graph traversal
+            let (traversal_entries, _truncated) = match self
+                .index_manager
+                .traverse(&seed_id, types, max_depth, top_k)
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return StrategyOutcome::Err(
+                        RecallStrategy::Causal,
+                        format!("graph traversal failed: {}", e),
+                    );
                 }
-                Err(HebbsError::MemoryNotFound { .. }) => continue,
-                Err(_) => continue,
+            };
+            let max_depth_f32 = max_depth as f32;
+            for entry in &traversal_entries {
+                match Self::get_from_storage(storage, &entry.memory_id) {
+                    Ok(mem) => {
+                        let relevance = if max_depth_f32 > 0.0 {
+                            (1.0 - (entry.depth as f32 / max_depth_f32)).max(0.0)
+                        } else {
+                            1.0
+                        };
+                        results.push(StrategyResult {
+                            memory: mem,
+                            relevance,
+                            detail: StrategyDetail::Causal {
+                                depth: entry.depth,
+                                edge_type: entry.edge_type,
+                                seed_id,
+                                relevance,
+                            },
+                        });
+                    }
+                    Err(HebbsError::MemoryNotFound { .. }) => continue,
+                    Err(_) => continue,
+                }
+            }
+            return StrategyOutcome::Ok(results);
+        }
+
+        // Assoc-HNSW based traversal — bidirectional by direction
+        for &etype in types {
+            let fwd_hits: Vec<([u8; 16], f32)> = match direction {
+                CausalDirection::Backward => vec![],
+                _ => self
+                    .index_manager
+                    .assoc_index
+                    .search_causal_forward(tenant_id, &seed_assoc, etype, top_k, None)
+                    .unwrap_or_default(),
+            };
+            let bwd_hits: Vec<([u8; 16], f32)> = match direction {
+                CausalDirection::Forward => vec![],
+                _ => self
+                    .index_manager
+                    .assoc_index
+                    .search_causal_backward(tenant_id, &seed_assoc, etype, top_k, None)
+                    .unwrap_or_default(),
+            };
+
+            for (mem_id, distance) in fwd_hits.into_iter().chain(bwd_hits) {
+                if seen.contains(&mem_id) {
+                    continue;
+                }
+                seen.insert(mem_id);
+                match Self::get_from_storage(storage, &mem_id) {
+                    Ok(mem) => {
+                        let relevance = (1.0 - distance).max(0.0);
+                        results.push(StrategyResult {
+                            memory: mem,
+                            relevance,
+                            detail: StrategyDetail::Causal {
+                                depth: 1,
+                                edge_type: etype,
+                                seed_id,
+                                relevance,
+                            },
+                        });
+                    }
+                    Err(HebbsError::MemoryNotFound { .. }) => continue,
+                    Err(_) => continue,
+                }
             }
         }
+
+        results.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(top_k);
 
         StrategyOutcome::Ok(results)
     }
@@ -2214,7 +2332,67 @@ impl Engine {
         top_k: usize,
         ef_search: Option<usize>,
         cue_context: Option<&HashMap<String, serde_json::Value>>,
+        tenant_id: &str,
+        analogy_a_id: Option<[u8; 16]>,
+        analogy_b_id: Option<[u8; 16]>,
     ) -> StrategyOutcome {
+        // Vector arithmetic analogy: A:B::C:? when all three assoc embeddings are available
+        if let (Some(a_id), Some(b_id)) = (analogy_a_id, analogy_b_id) {
+            let a_mem = Self::get_from_storage(storage, &a_id);
+            let b_mem = Self::get_from_storage(storage, &b_id);
+            if let (Ok(a_mem), Ok(b_mem)) = (a_mem, b_mem) {
+                let a_assoc = a_mem.associative_embedding.as_deref()
+                    .or(a_mem.embedding.as_deref())
+                    .unwrap_or(&[]);
+                let b_assoc = b_mem.associative_embedding.as_deref()
+                    .or(b_mem.embedding.as_deref())
+                    .unwrap_or(&[]);
+                let c_assoc = cue_embedding.unwrap_or(&[]);
+                if !a_assoc.is_empty() && !b_assoc.is_empty() && !c_assoc.is_empty() {
+                    let ef = ef_search.map(|e| e * 2).or(Some(200));
+                    let hits = self.index_manager.assoc_index.search_analogy(
+                        tenant_id, a_assoc, b_assoc, c_assoc, top_k, ef,
+                    );
+                    match hits {
+                        Ok(search_results) => {
+                            let mut scored: Vec<StrategyResult> = Vec::with_capacity(search_results.len());
+                            for (memory_id, distance) in &search_results {
+                                match Self::get_from_storage(storage, memory_id) {
+                                    Ok(mem) => {
+                                        let relevance = (1.0 - distance).max(0.0);
+                                        scored.push(StrategyResult {
+                                            memory: mem,
+                                            relevance,
+                                            detail: StrategyDetail::Analogical {
+                                                embedding_similarity: relevance,
+                                                structural_similarity: 0.0,
+                                                relevance,
+                                                used_vector_analogy: true,
+                                            },
+                                        });
+                                    }
+                                    Err(HebbsError::MemoryNotFound { .. }) => continue,
+                                    Err(_) => continue,
+                                }
+                            }
+                            scored.sort_by(|a, b| {
+                                b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                            scored.truncate(top_k);
+                            return StrategyOutcome::Ok(scored);
+                        }
+                        Err(e) => {
+                            return StrategyOutcome::Err(
+                                RecallStrategy::Analogical,
+                                format!("assoc HNSW analogy search failed: {}", e),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: wider HNSW + structural similarity re-ranking
         let embedding = match cue_embedding {
             Some(e) => e,
             None => {
@@ -2263,6 +2441,7 @@ impl Engine {
                             embedding_similarity,
                             structural_similarity,
                             relevance,
+                            used_vector_analogy: false,
                         },
                     });
                 }
@@ -2454,6 +2633,10 @@ struct StrategyContext<'a> {
     top_k: usize,
     ef_search: Option<usize>,
     cue_context: Option<&'a HashMap<String, serde_json::Value>>,
+    tenant_id: &'a str,
+    causal_direction: CausalDirection,
+    analogy_a_id: Option<[u8; 16]>,
+    analogy_b_id: Option<[u8; 16]>,
 }
 
 /// Returns the current time as microseconds since the Unix epoch.
@@ -3061,6 +3244,9 @@ mod tests {
             ef_search: None,
             scoring_weights: None,
             cue_context: None,
+            causal_direction: None,
+            analogy_a_id: None,
+            analogy_b_id: None,
         };
         let err = engine.recall(input).unwrap_err();
         assert!(matches!(err, HebbsError::InvalidInput { .. }));
@@ -3472,6 +3658,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
         let weights = ScoringWeights::default();
         let now = now_microseconds();
@@ -3504,6 +3691,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
 
         let old = Memory {
@@ -3542,6 +3730,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
 
         let old = Memory {
@@ -3720,6 +3909,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
 
         let weights = AnalogicalWeights::default();
@@ -3750,6 +3940,7 @@ mod tests {
             kind: MemoryKind::Episode,
             device_id: None,
             logical_clock: 0,
+            associative_embedding: None,
         };
 
         let weights = AnalogicalWeights::default();

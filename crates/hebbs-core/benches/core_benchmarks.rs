@@ -174,6 +174,7 @@ fn bench_serialization(c: &mut Criterion) {
         kind: hebbs_core::memory::MemoryKind::Episode,
         device_id: None,
         logical_clock: 0,
+        associative_embedding: None,
     };
 
     let bytes = memory.to_bytes();
@@ -263,6 +264,9 @@ fn bench_recall_temporal(c: &mut Criterion) {
                         ef_search: None,
                         scoring_weights: None,
                         cue_context: None,
+                        causal_direction: None,
+                        analogy_a_id: None,
+                        analogy_b_id: None,
                     }))
                     .unwrap();
             });

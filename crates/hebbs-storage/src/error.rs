@@ -74,6 +74,7 @@ pub enum ColumnFamilyName {
     Vectors,
     Graph,
     Meta,
+    VectorsAssociative,
 }
 
 impl ColumnFamilyName {
@@ -84,6 +85,7 @@ impl ColumnFamilyName {
             Self::Vectors => "vectors",
             Self::Graph => "graph",
             Self::Meta => "meta",
+            Self::VectorsAssociative => "vectors_associative",
         }
     }
 
@@ -95,13 +97,20 @@ impl ColumnFamilyName {
             Self::Vectors,
             Self::Graph,
             Self::Meta,
+            Self::VectorsAssociative,
         ]
     }
 
     /// Non-default column families (RocksDB always creates "default"
     /// implicitly, so these are the ones we must explicitly create).
     pub fn non_default() -> &'static [ColumnFamilyName] {
-        &[Self::Temporal, Self::Vectors, Self::Graph, Self::Meta]
+        &[
+            Self::Temporal,
+            Self::Vectors,
+            Self::Graph,
+            Self::Meta,
+            Self::VectorsAssociative,
+        ]
     }
 }
 
