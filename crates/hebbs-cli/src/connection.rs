@@ -4,9 +4,29 @@ use hebbs_proto::generated::{
     health_service_client::HealthServiceClient, memory_service_client::MemoryServiceClient,
     reflect_service_client::ReflectServiceClient, subscribe_service_client::SubscribeServiceClient,
 };
+use tonic::service::interceptor::InterceptedService;
+use tonic::service::Interceptor;
 use tonic::transport::Channel;
 
 use crate::error::CliError;
+
+/// Interceptor that injects `Authorization: Bearer <key>` when an API key is set.
+#[derive(Clone)]
+pub(crate) struct AuthInterceptor {
+    header_value: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+}
+
+impl Interceptor for AuthInterceptor {
+    fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        if let Some(ref val) = self.header_value {
+            req.metadata_mut()
+                .insert("authorization", val.clone());
+        }
+        Ok(req)
+    }
+}
+
+pub(crate) type AuthChannel = InterceptedService<Channel, AuthInterceptor>;
 
 /// Manages the gRPC connection to a HEBBS server.
 /// Lazily connects on first use and supports reconnection.
@@ -76,24 +96,44 @@ impl ConnectionManager {
         Ok(channel)
     }
 
-    pub async fn memory_client(&mut self) -> Result<MemoryServiceClient<Channel>, CliError> {
-        let ch = self.ensure_channel().await?;
-        Ok(MemoryServiceClient::new(ch))
+    fn build_interceptor(&self) -> Result<AuthInterceptor, CliError> {
+        let header_value = match self.api_key {
+            Some(ref key) => {
+                let bearer = format!("Bearer {}", key);
+                let val = bearer.parse().map_err(|_| CliError::InvalidArgument {
+                    message: "API key contains invalid characters for a gRPC header".to_string(),
+                })?;
+                Some(val)
+            }
+            None => None,
+        };
+        Ok(AuthInterceptor { header_value })
     }
 
-    pub async fn subscribe_client(&mut self) -> Result<SubscribeServiceClient<Channel>, CliError> {
+    pub(crate) async fn memory_client(&mut self) -> Result<MemoryServiceClient<AuthChannel>, CliError> {
         let ch = self.ensure_channel().await?;
-        Ok(SubscribeServiceClient::new(ch))
+        let interceptor = self.build_interceptor()?;
+        Ok(MemoryServiceClient::new(InterceptedService::new(ch, interceptor)))
     }
 
-    pub async fn reflect_client(&mut self) -> Result<ReflectServiceClient<Channel>, CliError> {
+    pub(crate) async fn subscribe_client(
+        &mut self,
+    ) -> Result<SubscribeServiceClient<AuthChannel>, CliError> {
         let ch = self.ensure_channel().await?;
-        Ok(ReflectServiceClient::new(ch))
+        let interceptor = self.build_interceptor()?;
+        Ok(SubscribeServiceClient::new(InterceptedService::new(ch, interceptor)))
     }
 
-    pub async fn health_client(&mut self) -> Result<HealthServiceClient<Channel>, CliError> {
+    pub(crate) async fn reflect_client(&mut self) -> Result<ReflectServiceClient<AuthChannel>, CliError> {
         let ch = self.ensure_channel().await?;
-        Ok(HealthServiceClient::new(ch))
+        let interceptor = self.build_interceptor()?;
+        Ok(ReflectServiceClient::new(InterceptedService::new(ch, interceptor)))
+    }
+
+    pub(crate) async fn health_client(&mut self) -> Result<HealthServiceClient<AuthChannel>, CliError> {
+        let ch = self.ensure_channel().await?;
+        let interceptor = self.build_interceptor()?;
+        Ok(HealthServiceClient::new(InterceptedService::new(ch, interceptor)))
     }
 
     /// Mark connection as potentially broken (e.g., after an Unavailable error).

@@ -612,7 +612,7 @@ impl IndexManager {
         let graphs = self.hnsw_graphs.read();
         graphs
             .get(DEFAULT_TENANT)
-            .map_or(false, |(g, _)| g.needs_cleanup(0.1))
+            .is_some_and(|(g, _)| g.needs_cleanup(0.1))
     }
 
     /// Run HNSW tombstone cleanup on the default tenant. Returns count of removed nodes.

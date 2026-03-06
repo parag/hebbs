@@ -6,11 +6,11 @@ use tokio::signal;
 use tonic::transport::Server as TonicServer;
 use tracing::{error, info, warn};
 
-use hebbs_core::auth::KeyCache;
+use hebbs_core::auth::{self, KeyCache};
 use hebbs_core::engine::Engine;
 use hebbs_core::rate_limit::RateLimiter;
 use hebbs_core::reflect::ReflectConfig;
-use hebbs_embed::MockEmbedder;
+use hebbs_embed::{EmbedderConfig, MockEmbedder, OnnxEmbedder};
 use hebbs_reflect::{LlmProviderConfig, ProviderType};
 use hebbs_proto::generated::{
     health_service_server::HealthServiceServer, memory_service_server::MemoryServiceServer,
@@ -42,8 +42,36 @@ pub async fn run(config: HebbsConfig) -> Result<(), Box<dyn std::error::Error>> 
             .map_err(|e| format!("failed to open storage: {}", e))?,
     );
 
-    info!("initializing embedder (mock for Phase 8)");
-    let embedder = Arc::new(MockEmbedder::new(config.embedding.dimensions));
+    let embedder: Arc<dyn hebbs_embed::Embedder> = if config.embedding.provider == "mock" {
+        info!("initializing embedder (mock)");
+        Arc::new(MockEmbedder::new(config.embedding.dimensions))
+    } else {
+        info!(
+            auto_download = config.embedding.auto_download,
+            "initializing ONNX embedder"
+        );
+        let model_dir = config
+            .embedding
+            .model_path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(&config.storage.data_dir)
+                    .join("models")
+                    .join("bge-small-en-v1.5")
+            });
+        let embed_cfg = EmbedderConfig {
+            model_dir,
+            model_config: hebbs_embed::ModelConfig::bge_small_en_v1_5(),
+            download_base_url: config.embedding.download_base_url.clone(),
+            auto_download: config.embedding.auto_download,
+        };
+        Arc::new(
+            OnnxEmbedder::new(embed_cfg)
+                .map_err(|e| format!("failed to initialize ONNX embedder: {}", e))?,
+        )
+    };
+    info!(dimensions = embedder.dimensions(), "embedder ready");
 
     info!("initializing engine");
     let engine = Arc::new(
@@ -61,6 +89,33 @@ pub async fn run(config: HebbsConfig) -> Result<(), Box<dyn std::error::Error>> 
     match key_cache.load_from_storage(storage.as_ref()) {
         Ok(n) => info!(key_count = n, "loaded API keys from storage"),
         Err(e) => warn!(error = %e, "failed to load API keys (auth will reject all requests)"),
+    }
+
+    if config.auth.enabled && key_cache.key_count() == 0 {
+        let (raw_key, record) = auth::generate_key(
+            "default",
+            "bootstrap-admin",
+            auth::PERM_READ | auth::PERM_WRITE | auth::PERM_ADMIN,
+            None,
+        );
+        if let Err(e) = key_cache.insert(storage.as_ref(), record) {
+            error!(error = %e, "failed to persist bootstrap API key");
+        } else {
+            eprintln!();
+            eprintln!("╔══════════════════════════════════════════════════════════════════╗");
+            eprintln!("║  BOOTSTRAP API KEY (save this -- it will not be shown again)    ║");
+            eprintln!("║                                                                  ║");
+            eprintln!("║  {:<58}  ║", &raw_key);
+            eprintln!("║                                                                  ║");
+            eprintln!("║  Usage:                                                          ║");
+            eprintln!("║    export HEBBS_API_KEY=\"{:<38}\"  ║", &raw_key);
+            eprintln!("║    hebbs-cli remember \"your first memory\"                        ║");
+            eprintln!("║                                                                  ║");
+            eprintln!("║  To disable auth: HEBBS_AUTH_ENABLED=false                       ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            info!("bootstrap admin API key generated (tenant=default, permissions=read,write,admin)");
+        }
     }
 
     let rate_limiter = Arc::new(RateLimiter::new(config.rate_limit.clone()));
@@ -126,14 +181,48 @@ pub async fn run(config: HebbsConfig) -> Result<(), Box<dyn std::error::Error>> 
         ..ReflectConfig::default()
     }
     .validated();
-    let proposal_provider = Arc::from(
-        hebbs_reflect::create_provider(&reflect_config.proposal_provider_config)
-            .expect("failed to create reflect proposal LLM provider"),
-    );
-    let validation_provider = Arc::from(
-        hebbs_reflect::create_provider(&reflect_config.validation_provider_config)
-            .expect("failed to create reflect validation LLM provider"),
-    );
+    let proposal_provider: Arc<dyn hebbs_reflect::LlmProvider> = match hebbs_reflect::create_provider(&reflect_config.proposal_provider_config) {
+        Ok(p) => Arc::from(p),
+        Err(e) => {
+            warn!(
+                error = %e,
+                "failed to create reflect proposal LLM provider, falling back to mock"
+            );
+            Arc::from(
+                hebbs_reflect::create_provider(&LlmProviderConfig {
+                    provider_type: ProviderType::Mock,
+                    api_key: None,
+                    base_url: None,
+                    model: "mock".to_string(),
+                    timeout_secs: 30,
+                    max_retries: 0,
+                    retry_backoff_ms: 0,
+                })
+                .expect("mock provider should never fail"),
+            )
+        }
+    };
+    let validation_provider: Arc<dyn hebbs_reflect::LlmProvider> = match hebbs_reflect::create_provider(&reflect_config.validation_provider_config) {
+        Ok(p) => Arc::from(p),
+        Err(e) => {
+            warn!(
+                error = %e,
+                "failed to create reflect validation LLM provider, falling back to mock"
+            );
+            Arc::from(
+                hebbs_reflect::create_provider(&LlmProviderConfig {
+                    provider_type: ProviderType::Mock,
+                    api_key: None,
+                    base_url: None,
+                    model: "mock".to_string(),
+                    timeout_secs: 30,
+                    max_retries: 0,
+                    retry_backoff_ms: 0,
+                })
+                .expect("mock provider should never fail"),
+            )
+        }
+    };
     let reflect_svc = ReflectServiceImpl {
         engine: engine.clone(),
         metrics: metrics.clone(),
@@ -253,6 +342,7 @@ fn build_llm_provider_config(provider_name: &str, model: &str) -> LlmProviderCon
     let api_key = match provider_type {
         ProviderType::OpenAi => std::env::var("OPENAI_API_KEY").ok(),
         ProviderType::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok(),
+        ProviderType::Gemini => std::env::var("GEMINI_API_KEY").ok(),
         _ => None,
     };
     LlmProviderConfig {

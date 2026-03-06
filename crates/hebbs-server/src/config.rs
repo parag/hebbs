@@ -67,17 +67,29 @@ impl Default for StorageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
+    /// Embedding provider: `"onnx"` (real model) or `"mock"` (hash-based, testing only).
+    pub provider: String,
+    /// Directory containing the ONNX model files (model.onnx, tokenizer.json).
+    /// Defaults to `{data_dir}/models/bge-small-en-v1.5/` if unset.
     pub model_path: Option<String>,
     pub dimensions: usize,
     pub max_batch_size: usize,
+    /// Whether to auto-download model files from HuggingFace on first start.
+    pub auto_download: bool,
+    /// Base URL for model file downloads (HuggingFace by default).
+    pub download_base_url: String,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
+            provider: "onnx".to_string(),
             model_path: None,
             dimensions: 384,
             max_batch_size: 256,
+            auto_download: true,
+            download_base_url:
+                "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main".to_string(),
         }
     }
 }
@@ -184,24 +196,13 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
     pub enabled: bool,
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
     pub client_ca_path: Option<String>,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: None,
-            key_path: None,
-            client_ca_path: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,10 +285,38 @@ impl HebbsConfig {
                 self.decay.enabled = b;
             }
         }
+        if let Ok(v) = std::env::var("HEBBS_EMBEDDING_PROVIDER") {
+            self.embedding.provider = v;
+        }
+        if let Ok(v) = std::env::var("HEBBS_EMBEDDING_MODEL_PATH") {
+            self.embedding.model_path = Some(v);
+        }
+        if let Ok(v) = std::env::var("HEBBS_EMBEDDING_DIMENSIONS") {
+            if let Ok(n) = v.parse() {
+                self.embedding.dimensions = n;
+            }
+        }
+        if let Ok(v) = std::env::var("HEBBS_EMBEDDING_AUTO_DOWNLOAD") {
+            if let Ok(b) = v.parse() {
+                self.embedding.auto_download = b;
+            }
+        }
         if let Ok(v) = std::env::var("HEBBS_REFLECT_ENABLED") {
             if let Ok(b) = v.parse() {
                 self.reflect.enabled = b;
             }
+        }
+        if let Ok(v) = std::env::var("HEBBS_REFLECT_PROPOSAL_PROVIDER") {
+            self.reflect.proposal_provider = v;
+        }
+        if let Ok(v) = std::env::var("HEBBS_REFLECT_PROPOSAL_MODEL") {
+            self.reflect.proposal_model = v;
+        }
+        if let Ok(v) = std::env::var("HEBBS_REFLECT_VALIDATION_PROVIDER") {
+            self.reflect.validation_provider = v;
+        }
+        if let Ok(v) = std::env::var("HEBBS_REFLECT_VALIDATION_MODEL") {
+            self.reflect.validation_model = v;
         }
         if let Ok(v) = std::env::var("HEBBS_AUTH_ENABLED") {
             if let Ok(b) = v.parse() {

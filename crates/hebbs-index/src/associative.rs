@@ -16,7 +16,7 @@ const HEBBIAN_LR: f32 = 0.1;
 const TYPE_OFFSETS_META_KEY: &[u8] = b"hebbian:type_offsets";
 
 /// L2-normalize a vector in place. Returns the norm.
-fn l2_normalize(v: &mut Vec<f32>) -> f32 {
+fn l2_normalize(v: &mut [f32]) -> f32 {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-9 {
         for x in v.iter_mut() {
@@ -318,7 +318,7 @@ impl AssociativeIndex {
         let (graph, _) = graphs
             .entry(tenant_id.to_string())
             .or_insert_with(|| (HnswGraph::new(self.hnsw_params.clone()), Instant::now()));
-        Ok(graph.search(query, k, ef)?)
+        graph.search(query, k, ef)
     }
 
     /// Persist type_offsets to Meta CF using binary format:

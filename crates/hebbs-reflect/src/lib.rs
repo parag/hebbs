@@ -7,8 +7,8 @@ pub mod types;
 
 pub use error::{ReflectError, Result};
 pub use llm::{
-    create_provider, AnthropicProvider, LlmProvider, LlmProviderConfig, LlmRequest, LlmResponse,
-    MockLlmProvider, OllamaProvider, OpenAiProvider, ProviderType, ResponseFormat,
+    create_provider, AnthropicProvider, GeminiProvider, LlmProvider, LlmProviderConfig, LlmRequest,
+    LlmResponse, MockLlmProvider, OllamaProvider, OpenAiProvider, ProviderType, ResponseFormat,
 };
 pub use pipeline::ReflectPipeline;
 pub use types::*;

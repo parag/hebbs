@@ -86,6 +86,7 @@ pub fn extract_tenant_from_request<T>(request: &tonic::Request<T>) -> TenantCont
 
 /// Verify that the authenticated key carries the required permission bits.
 /// When auth is disabled no `KeyRecord` is present and the check passes.
+#[allow(clippy::result_large_err)]
 pub fn check_permission(
     request: &tonic::Request<impl std::any::Any>,
     required: u8,
@@ -103,6 +104,7 @@ pub fn check_permission(
 
 /// Check the per-tenant rate limiter for the given operation.
 /// Returns `Status::resource_exhausted` with a retry-after hint on rejection.
+#[allow(clippy::result_large_err)]
 pub fn check_rate_limit(
     auth_state: &AuthState,
     tenant: &TenantContext,
@@ -215,7 +217,7 @@ pub async fn rate_limit_middleware(
     let operation = resolve_rest_operation(&method, &path);
 
     if let Err(retry_after_ms) = auth_state.rate_limiter.check(tenant.tenant_id(), operation) {
-        let retry_after_secs = (retry_after_ms + 999) / 1000;
+        let retry_after_secs = retry_after_ms.div_ceil(1000);
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(

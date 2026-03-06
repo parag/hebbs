@@ -48,20 +48,15 @@ pub enum RecallStrategy {
 }
 
 /// Direction for causal graph traversal using the associative HNSW.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum CausalDirection {
     /// Follow edges from cause to effect (forward direction).
     Forward,
     /// Follow edges from effect to cause (backward direction).
     Backward,
     /// Search both directions and merge results.
+    #[default]
     Both,
-}
-
-impl Default for CausalDirection {
-    fn default() -> Self {
-        Self::Both
-    }
 }
 
 /// Input for the `recall()` operation.
