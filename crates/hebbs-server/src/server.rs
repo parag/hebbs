@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::signal;
 use tonic::transport::Server as TonicServer;
@@ -267,6 +267,22 @@ pub async fn run(config: HebbsConfig) -> Result<(), Box<dyn std::error::Error>> 
     info!(addr = %grpc_addr, "starting gRPC server");
     info!(addr = %http_addr, "starting HTTP server");
 
+    // Spawn a force-exit deadline: if graceful shutdown takes longer than
+    // the configured timeout, force-kill the process. This prevents the
+    // server from hanging indefinitely if gRPC/HTTP drain or background
+    // workers stall during shutdown.
+    let timeout_secs = config.server.shutdown_timeout_secs;
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        info!(timeout_secs, "shutdown signal received, draining connections");
+        tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
+        error!(
+            timeout_secs,
+            "graceful shutdown timed out, force-exiting"
+        );
+        std::process::exit(1);
+    });
+
     let grpc_server = TonicServer::builder()
         .add_service(MemoryServiceServer::with_interceptor(
             memory_svc,
@@ -341,8 +357,6 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-
-    info!("shutdown signal received");
 }
 
 fn build_llm_provider_config(provider_name: &str, model: &str) -> LlmProviderConfig {

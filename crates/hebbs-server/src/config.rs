@@ -271,6 +271,11 @@ impl HebbsConfig {
         if let Ok(v) = std::env::var("HEBBS_SERVER_BIND_ADDRESS") {
             self.server.bind_address = v;
         }
+        if let Ok(v) = std::env::var("HEBBS_SERVER_SHUTDOWN_TIMEOUT_SECS") {
+            if let Ok(n) = v.parse() {
+                self.server.shutdown_timeout_secs = n;
+            }
+        }
         if let Ok(v) = std::env::var("HEBBS_STORAGE_DATA_DIR") {
             self.storage.data_dir = v;
         }
