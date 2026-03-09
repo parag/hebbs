@@ -16,14 +16,14 @@ use hebbs_core::engine::{Engine, RememberInput};
 use hebbs_core::forget::ForgetCriteria;
 use hebbs_core::memory::MemoryKind;
 use hebbs_core::recall::{
-    PrimeInput, RecallInput, RecallStrategy, ScoringWeights, StrategyDetail,
-    DEFAULT_MAX_AGE_US, DEFAULT_REINFORCEMENT_CAP,
+    PrimeInput, RecallInput, RecallStrategy, ScoringWeights, StrategyDetail, DEFAULT_MAX_AGE_US,
+    DEFAULT_REINFORCEMENT_CAP,
 };
-use hebbs_index::EdgeType;
 use hebbs_core::reflect::InsightsFilter;
 use hebbs_core::revise::{ContextMode, ReviseInput};
 use hebbs_core::subscribe::SubscribeConfig;
 use hebbs_core::tenant::TenantContext;
+use hebbs_index::EdgeType;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -210,7 +210,10 @@ struct StrategyDetailJson {
 
 fn strategy_detail_to_json(d: &StrategyDetail) -> StrategyDetailJson {
     match d {
-        StrategyDetail::Similarity { distance, relevance } => StrategyDetailJson {
+        StrategyDetail::Similarity {
+            distance,
+            relevance,
+        } => StrategyDetailJson {
             strategy: "similarity".to_string(),
             relevance: *relevance,
             distance: Some(*distance),
@@ -220,7 +223,11 @@ fn strategy_detail_to_json(d: &StrategyDetail) -> StrategyDetailJson {
             embedding_similarity: None,
             structural_similarity: None,
         },
-        StrategyDetail::Temporal { timestamp, rank, relevance } => StrategyDetailJson {
+        StrategyDetail::Temporal {
+            timestamp,
+            rank,
+            relevance,
+        } => StrategyDetailJson {
             strategy: "temporal".to_string(),
             relevance: *relevance,
             distance: None,
@@ -230,7 +237,9 @@ fn strategy_detail_to_json(d: &StrategyDetail) -> StrategyDetailJson {
             embedding_similarity: None,
             structural_similarity: None,
         },
-        StrategyDetail::Causal { depth, relevance, .. } => StrategyDetailJson {
+        StrategyDetail::Causal {
+            depth, relevance, ..
+        } => StrategyDetailJson {
             strategy: "causal".to_string(),
             relevance: *relevance,
             distance: None,
@@ -240,7 +249,12 @@ fn strategy_detail_to_json(d: &StrategyDetail) -> StrategyDetailJson {
             embedding_similarity: None,
             structural_similarity: None,
         },
-        StrategyDetail::Analogical { embedding_similarity, structural_similarity, relevance, .. } => StrategyDetailJson {
+        StrategyDetail::Analogical {
+            embedding_similarity,
+            structural_similarity,
+            relevance,
+            ..
+        } => StrategyDetailJson {
             strategy: "analogical".to_string(),
             relevance: *relevance,
             distance: None,
@@ -332,12 +346,20 @@ fn scoring_weights_from_body(sw: ScoringWeightsBody) -> ScoringWeights {
 }
 
 fn recall_result_to_rest_json(r: &hebbs_core::recall::RecallResult) -> RecallResultJson {
-    let primary_relevance = r.strategy_details.first().map(|d| d.relevance()).unwrap_or(0.0);
+    let primary_relevance = r
+        .strategy_details
+        .first()
+        .map(|d| d.relevance())
+        .unwrap_or(0.0);
     RecallResultJson {
         memory: memory_to_json(&r.memory),
         score: r.score,
         relevance: primary_relevance,
-        strategy_details: r.strategy_details.iter().map(strategy_detail_to_json).collect(),
+        strategy_details: r
+            .strategy_details
+            .iter()
+            .map(strategy_detail_to_json)
+            .collect(),
     }
 }
 
@@ -373,9 +395,7 @@ fn parse_hex_id_16(s: &str) -> Option<[u8; 16]> {
     }
 }
 
-fn json_value_to_hashmap(
-    val: serde_json::Value,
-) -> Option<HashMap<String, serde_json::Value>> {
+fn json_value_to_hashmap(val: serde_json::Value) -> Option<HashMap<String, serde_json::Value>> {
     match val {
         serde_json::Value::Object(map) => Some(map.into_iter().collect()),
         _ => None,

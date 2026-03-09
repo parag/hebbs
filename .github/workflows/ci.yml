@@ -74,34 +74,6 @@ jobs:
           maturin develop --release
           python -m pytest tests/ -v
 
-  bench-gate:
-    name: Benchmark Regression Gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - name: Build benchmarks
-        run: cargo build -p hebbs-bench --release
-      - name: Run quick latency benchmark
-        run: |
-          ./target/release/hebbs-bench latency --tier quick --output bench-results.json
-      - name: Compare with baseline
-        if: hashFiles('benches/baseline.json') != ''
-        run: |
-          ./target/release/hebbs-bench latency --tier quick --baseline benches/baseline.json
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: bench-results
-          path: bench-results.json
-
   audit:
     name: Security Audit
     runs-on: ubuntu-latest

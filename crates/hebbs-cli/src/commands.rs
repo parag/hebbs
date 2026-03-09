@@ -427,18 +427,19 @@ async fn execute_recall(
             let parts: Vec<&str> = tr.split(':').collect();
             if parts.len() != 2 {
                 return Err(CliError::InvalidArgument {
-                    message: format!(
-                        "Time range must be START_US:END_US, got \"{}\"",
-                        tr,
-                    ),
+                    message: format!("Time range must be START_US:END_US, got \"{}\"", tr,),
                 });
             }
-            let start_us = parts[0].parse::<u64>().map_err(|_| CliError::InvalidArgument {
-                message: format!("Invalid start timestamp \"{}\": must be a u64", parts[0]),
-            })?;
-            let end_us = parts[1].parse::<u64>().map_err(|_| CliError::InvalidArgument {
-                message: format!("Invalid end timestamp \"{}\": must be a u64", parts[1]),
-            })?;
+            let start_us = parts[0]
+                .parse::<u64>()
+                .map_err(|_| CliError::InvalidArgument {
+                    message: format!("Invalid start timestamp \"{}\": must be a u64", parts[0]),
+                })?;
+            let end_us = parts[1]
+                .parse::<u64>()
+                .map_err(|_| CliError::InvalidArgument {
+                    message: format!("Invalid end timestamp \"{}\": must be a u64", parts[1]),
+                })?;
             Some(pb::TimeRange { start_us, end_us })
         }
         None => None,

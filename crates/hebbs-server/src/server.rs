@@ -274,12 +274,12 @@ pub async fn run(config: HebbsConfig) -> Result<(), Box<dyn std::error::Error>> 
     let timeout_secs = config.server.shutdown_timeout_secs;
     tokio::spawn(async move {
         shutdown_signal().await;
-        info!(timeout_secs, "shutdown signal received, draining connections");
-        tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
-        error!(
+        info!(
             timeout_secs,
-            "graceful shutdown timed out, force-exiting"
+            "shutdown signal received, draining connections"
         );
+        tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
+        error!(timeout_secs, "graceful shutdown timed out, force-exiting");
         std::process::exit(1);
     });
 

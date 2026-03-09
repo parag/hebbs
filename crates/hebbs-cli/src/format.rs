@@ -756,7 +756,11 @@ fn recall_result_to_json(r: &pb::RecallResult) -> RecallResultJson {
         memory,
         score: r.score,
         relevance,
-        strategy_details: r.strategy_details.iter().map(proto_strategy_detail_to_json).collect(),
+        strategy_details: r
+            .strategy_details
+            .iter()
+            .map(proto_strategy_detail_to_json)
+            .collect(),
     }
 }
 

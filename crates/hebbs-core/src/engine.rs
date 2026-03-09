@@ -2193,10 +2193,7 @@ impl Engine {
                 Err(_) => {
                     return StrategyOutcome::Err(
                         RecallStrategy::Causal,
-                        format!(
-                            "causal recall seed memory not found: {}",
-                            hex::encode(seed)
-                        ),
+                        format!("causal recall seed memory not found: {}", hex::encode(seed)),
                     );
                 }
             }

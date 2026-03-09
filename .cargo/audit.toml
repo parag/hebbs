@@ -1,6 +1,6 @@
 [advisories]
 ignore = [
-    # paste: unmaintained, transitive dependency via tokenizers -> macro_rules_attribute.
-    # No direct fix available until HuggingFace tokenizers drops the dependency.
-    "RUSTSEC-2024-0388",
+    # paste: unmaintained, transitive dep via tokenizers -> macro_rules_attribute.
+    # No direct fix until HuggingFace tokenizers drops the dependency.
+    "RUSTSEC-2024-0436",
 ]
