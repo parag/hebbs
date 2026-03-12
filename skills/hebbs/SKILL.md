@@ -40,13 +40,19 @@ Or on any platform (Linux, macOS):
 curl -sSf https://hebbs.ai/install | sh
 ```
 
-The server must be running before using any `hebbs-cli` command:
+The server must be running before using any `hebbs-cli` command. Start it with auth disabled:
 
 ```
-hebbs-server
+HEBBS_AUTH_ENABLED=false hebbs-server --data-dir ~/.hebbs/data
 ```
 
-This starts the gRPC server on port 6380 and HTTP on port 6381 with default settings. To run in the background: `nohup hebbs-server &`
+To run in the background:
+
+```
+HEBBS_AUTH_ENABLED=false nohup hebbs-server --data-dir ~/.hebbs/data > /tmp/hebbs-server.log 2>&1 &
+```
+
+This starts the gRPC server on port 6380 and HTTP on port 6381. Data is stored in `~/.hebbs/data`.
 
 Before running commands, verify the server is reachable: `hebbs-cli recall "test" --format json 2>&1`. If connection is refused, the server is not running.
 
